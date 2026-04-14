@@ -1,6 +1,5 @@
 """
 SPX Dealer Risk Monitor — Streamlit App
-GEX+ Risk Surface | Crash Risk | Probability Forecast | 0DTE Gradient
 """
 
 import streamlit as st
@@ -10,10 +9,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime
 import pytz
-import time
 
-from fetch import (create_session, fetch_spot, get_expiries,
-                   fetch_full_chain)
+from fetch import (create_session, fetch_spot, get_expiries, fetch_full_chain)
 from compute import (compute_gex_vex, find_zero_gamma, build_gex_profile,
                      compute_gex_plus_at_spot, build_risk_surface,
                      compute_raw_exposures, kde_field,
@@ -42,7 +39,7 @@ if not st.session_state.authenticated:
     st.stop()
 
 # ═══════════════════════════════════════
-# Theme Toggle
+# Theme
 # ═══════════════════════════════════════
 if "dark_mode" not in st.session_state:
     st.session_state.dark_mode = True
@@ -51,49 +48,33 @@ def get_theme():
     if st.session_state.dark_mode:
         return {
             "template": "plotly_dark",
-            "bg": "#0a0a0a",
-            "card_bg": "#141414",
-            "text": "#e0e0e0",
-            "accent": "#00FFAA",
-            "red": "#CC3333",
-            "green": "#33AA33",
-            "blue": "#3366CC",
-            "gold": "#CC8800",
-            "muted": "#666666",
+            "bg": "#0a0a0a", "card_bg": "#141414", "text": "#e0e0e0",
+            "accent": "#00FFAA", "red": "#CC3333", "green": "#33AA33",
+            "blue": "#3366CC", "gold": "#CC8800", "muted": "#666666",
         }
     else:
         return {
             "template": "plotly_white",
-            "bg": "#ffffff",
-            "card_bg": "#f5f5f5",
-            "text": "#1a1a1a",
-            "accent": "#008866",
-            "red": "#CC2222",
-            "green": "#228822",
-            "blue": "#2255BB",
-            "gold": "#AA7700",
-            "muted": "#999999",
+            "bg": "#ffffff", "card_bg": "#f5f5f5", "text": "#1a1a1a",
+            "accent": "#008866", "red": "#CC2222", "green": "#228822",
+            "blue": "#2255BB", "gold": "#AA7700", "muted": "#999999",
         }
 
 theme = get_theme()
 
-# CSS injection
+# CSS
 if st.session_state.dark_mode:
     st.markdown("""<style>
         .stApp { background-color: #0a0a0a; }
         .metric-card { background: #141414; border: 1px solid #222; border-radius: 8px;
                        padding: 12px 16px; text-align: center; }
-        .metric-label { color: #888; font-size: 11px; text-transform: uppercase;
-                        font-family: monospace; }
-        .metric-value { color: #e0e0e0; font-size: 22px; font-weight: bold;
-                        font-family: monospace; }
+        .metric-label { color: #888; font-size: 11px; text-transform: uppercase; font-family: monospace; }
+        .metric-value { color: #e0e0e0; font-size: 22px; font-weight: bold; font-family: monospace; }
         .metric-sub { color: #555; font-size: 10px; font-family: monospace; }
-        .regime-badge { padding: 4px 12px; border-radius: 4px; font-weight: bold;
-                        font-family: monospace; display: inline-block; }
+        .regime-badge { padding: 4px 12px; border-radius: 4px; font-weight: bold; font-family: monospace; display: inline-block; }
         .regime-amp { background: #331111; color: #FF4444; border: 1px solid #FF4444; }
         .regime-damp { background: #113311; color: #44FF44; border: 1px solid #44FF44; }
-        .crash-card { background: #141414; border: 1px solid #333; border-radius: 8px;
-                      padding: 16px; margin: 8px 0; }
+        .crash-card { background: #141414; border: 1px solid #333; border-radius: 8px; padding: 16px; margin: 8px 0; }
         .crash-elevated { border-left: 4px solid #FF4444; }
         .crash-neutral { border-left: 4px solid #888; }
         .crash-contained { border-left: 4px solid #4444FF; }
@@ -102,17 +83,13 @@ else:
     st.markdown("""<style>
         .metric-card { background: #f5f5f5; border: 1px solid #ddd; border-radius: 8px;
                        padding: 12px 16px; text-align: center; }
-        .metric-label { color: #666; font-size: 11px; text-transform: uppercase;
-                        font-family: monospace; }
-        .metric-value { color: #1a1a1a; font-size: 22px; font-weight: bold;
-                        font-family: monospace; }
+        .metric-label { color: #666; font-size: 11px; text-transform: uppercase; font-family: monospace; }
+        .metric-value { color: #1a1a1a; font-size: 22px; font-weight: bold; font-family: monospace; }
         .metric-sub { color: #999; font-size: 10px; font-family: monospace; }
-        .regime-badge { padding: 4px 12px; border-radius: 4px; font-weight: bold;
-                        font-family: monospace; display: inline-block; }
+        .regime-badge { padding: 4px 12px; border-radius: 4px; font-weight: bold; font-family: monospace; display: inline-block; }
         .regime-amp { background: #ffeeee; color: #CC2222; border: 1px solid #CC2222; }
         .regime-damp { background: #eeffee; color: #228822; border: 1px solid #228822; }
-        .crash-card { background: #f9f9f9; border: 1px solid #ddd; border-radius: 8px;
-                      padding: 16px; margin: 8px 0; }
+        .crash-card { background: #f9f9f9; border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin: 8px 0; }
         .crash-elevated { border-left: 4px solid #CC2222; }
         .crash-neutral { border-left: 4px solid #888; }
         .crash-contained { border-left: 4px solid #2255BB; }
@@ -123,9 +100,8 @@ else:
 # Data Loading
 # ═══════════════════════════════════════
 
-@st.cache_data(ttl=300)  # 5 min cache
+@st.cache_data(ttl=300)
 def load_all_data():
-    """Fetch spot, expiries, and all chains."""
     sess, headers = create_session()
     spot = fetch_spot(sess, headers)
     if not spot:
@@ -141,14 +117,12 @@ def load_all_data():
 
     chains = {}
 
-    # 0DTE
     if nearest:
         c, p = fetch_full_chain(sess, headers, nearest, is_dense=False)
         if not c.empty and not p.empty:
             dte = (datetime.strptime(nearest, "%Y-%m-%d") - datetime.now()).days
             chains[nearest] = {"calls": c, "puts": p, "label": f"0DTE ({dte}d)"}
 
-    # Monthlies
     for exp in monthlies:
         c, p = fetch_full_chain(sess, headers, exp, is_dense=True)
         if not c.empty and not p.empty:
@@ -156,9 +130,7 @@ def load_all_data():
             chains[exp] = {"calls": c, "puts": p, "label": f"Monthly ({dte}d)"}
 
     return {
-        "spot": spot,
-        "nearest": nearest,
-        "monthlies": monthlies,
+        "spot": spot, "nearest": nearest, "monthlies": monthlies,
         "chains": chains,
         "timestamp": datetime.now(pytz.timezone("US/Eastern")).strftime("%I:%M %p ET"),
     }
@@ -177,16 +149,22 @@ nearest_exp = data["nearest"]
 target_monthlies = data["monthlies"]
 ts = data["timestamp"]
 
-# Pre-compute GEX data for all expiries
+# Pre-compute GEX
 gex_data = {}
 for exp, chain in chains.items():
     gex_data[exp] = compute_gex_vex(chain["calls"], chain["puts"], spot)
 
-# Front monthly
 front_exp = target_monthlies[0] if target_monthlies else nearest_exp
+if front_exp not in chains:
+    front_exp = list(chains.keys())[0] if chains else None
+
+if front_exp is None:
+    st.error("No chain data available.")
+    st.stop()
+
 front_gex = gex_data.get(front_exp, pd.DataFrame())
-front_calls = chains[front_exp]["calls"] if front_exp in chains else pd.DataFrame()
-front_puts = chains[front_exp]["puts"] if front_exp in chains else pd.DataFrame()
+front_calls = chains[front_exp]["calls"]
+front_puts = chains[front_exp]["puts"]
 
 
 # ═══════════════════════════════════════
@@ -195,21 +173,21 @@ front_puts = chains[front_exp]["puts"] if front_exp in chains else pd.DataFrame(
 hdr_left, hdr_right = st.columns([3, 1])
 with hdr_left:
     st.markdown(f"### SPX Dealer Risk Monitor")
-    st.markdown(f"**SPX {spot:,.2f}** · {front_exp} · {chains[front_exp]['label'] if front_exp in chains else ''} · {ts}")
+    st.markdown(f"**SPX {spot:,.2f}** · {front_exp} · {chains[front_exp]['label']} · {ts}")
 with hdr_right:
-    col_toggle, col_refresh = st.columns(2)
-    with col_toggle:
+    col_t, col_r = st.columns(2)
+    with col_t:
         dark = st.toggle("🌙", value=st.session_state.dark_mode, key="theme_toggle")
         if dark != st.session_state.dark_mode:
             st.session_state.dark_mode = dark
             st.rerun()
-    with col_refresh:
+    with col_r:
         if st.button("🔄 Refresh"):
             st.cache_data.clear()
             st.rerun()
 
 # ═══════════════════════════════════════
-# Top Metrics Bar
+# Top Metrics
 # ═══════════════════════════════════════
 if not front_gex.empty:
     total_gex = front_gex["gex"].sum()
@@ -217,16 +195,8 @@ if not front_gex.empty:
     total_gp = front_gex["gex_plus"].sum()
     total_npd = front_gex["npd_contrib"].sum()
     zg = find_zero_gamma(front_gex, spot)
-
-    # Combined monthly GEX+
     combined_gp = sum(gex_data[e]["gex_plus"].sum() for e in target_monthlies if e in gex_data)
-
-    # Charm
-    charm_total = 0
-    if front_exp in chains:
-        charm_total = compute_charm_for_expiry(front_calls, front_puts, spot)
-
-    # Regime
+    charm_total = compute_charm_for_expiry(front_calls, front_puts, spot) if front_exp in chains else 0
     regime_amp = combined_gp < 0
 
     cols = st.columns(7)
@@ -247,7 +217,6 @@ if not front_gex.empty:
                 <div class="metric-sub">{sub}</div>
             </div>""", unsafe_allow_html=True)
 
-    # Regime badge
     badge_class = "regime-amp" if regime_amp else "regime-damp"
     badge_text = "⚠ AMPLIFYING" if regime_amp else "✓ DAMPENING"
     st.markdown(f'<div style="text-align:right;margin-top:-10px;">'
@@ -263,6 +232,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "HEATMAP", "RISK ANALYSIS", "CRASH RISK", "FORECAST", "0DTE GRADIENT"
 ])
 
+
 # ── TAB 1: HEATMAP ──
 with tab1:
     st.markdown("#### GEX+ Risk Surface — Spot Move × IV Shock")
@@ -274,11 +244,15 @@ with tab1:
     with st.spinner("Computing risk surface..."):
         surface = build_risk_surface(front_calls, front_puts, spot, spot_pcts, iv_shocks)
 
+    # Numeric axes
+    x_vals = (spot_pcts * 100).tolist()   # [-15, ..., 10]
+    y_vals = (iv_shocks * 100).tolist()   # [-10, ..., 40]
+
     fig_hm = go.Figure()
     fig_hm.add_trace(go.Heatmap(
         z=surface,
-        x=[f"{p*100:.0f}" for p in spot_pcts],
-        y=[f"{v*100:.0f}" for v in iv_shocks],
+        x=x_vals,
+        y=y_vals,
         colorscale=[
             [0, "#8B0000"], [0.20, "#CC2222"], [0.40, "#441111"],
             [0.48, "#1a0505"], [0.5, "#0a0a0a"], [0.52, "#05051a"],
@@ -286,21 +260,32 @@ with tab1:
         ],
         zmid=0, zsmooth="best",
         colorbar=dict(title="GEX+ ($M)"),
-        hovertemplate="Spot: %{x}%<br>IV: %{y}pts<br>GEX+: %{z:.1f}M<extra></extra>",
+        hovertemplate="Spot: %{x:.0f}%<br>IV: %{y:.0f}pts<br>GEX+: %{z:.1f}M<extra></extra>",
     ))
-    fig_hm.add_vline(x="0", line_dash="dash", line_color="white", line_width=1.5)
-    fig_hm.add_hline(y="0", line_dash="dash", line_color="white", line_width=1.5)
-    fig_hm.add_annotation(x="0", y="0", text="◉", showarrow=False,
+
+    # Crosshairs at 0,0
+    fig_hm.add_hline(y=0, line_dash="dash", line_color="white", line_width=1.5)
+    fig_hm.add_vline(x=0, line_dash="dash", line_color="white", line_width=1.5)
+    fig_hm.add_annotation(x=0, y=0, text="◉", showarrow=False,
                            font=dict(color="white", size=18))
-    fig_hm.add_annotation(x="-12", y="35", text="DANGER ZONE", showarrow=False,
+    fig_hm.add_annotation(x=-12, y=35, text="DANGER ZONE", showarrow=False,
                            font=dict(color="#FF5555", size=12), bgcolor="rgba(80,0,0,0.6)")
-    fig_hm.add_annotation(x="7", y="-7", text="SAFE ZONE", showarrow=False,
+    fig_hm.add_annotation(x=7, y=-7, text="SAFE ZONE", showarrow=False,
                            font=dict(color="#5555FF", size=12), bgcolor="rgba(0,0,80,0.6)")
-    fig_hm.update_layout(template=theme["template"], height=550,
-                          xaxis_title="Spot Move (%)", yaxis_title="IV Shock (vol pts)")
+
+    # Spot labels along top
+    for pv in [-10, -5, 0, 5, 10]:
+        s = spot * (1 + pv / 100)
+        fig_hm.add_annotation(x=pv, y=max(y_vals) + 3, text=f"SPX {s:,.0f}",
+            showarrow=False, font=dict(color="rgba(255,255,255,0.5)", size=9))
+
+    fig_hm.update_layout(
+        template=theme["template"], height=550,
+        xaxis_title="Spot Move (%)", yaxis_title="IV Shock (vol pts)",
+        xaxis=dict(dtick=5), yaxis=dict(dtick=10),
+    )
     st.plotly_chart(fig_hm, width="stretch")
 
-    # Summary below heatmap
     c0 = surface[np.argmin(np.abs(iv_shocks)), np.argmin(np.abs(spot_pcts))]
     wi = np.unravel_index(surface.argmin(), surface.shape)
     bi = np.unravel_index(surface.argmax(), surface.shape)
@@ -335,14 +320,13 @@ with tab2:
         fig_gex.update_yaxes(title_text="$M", row=2, col=1)
         st.plotly_chart(fig_gex, width="stretch")
 
-    # Charm per month
     st.markdown("#### Charm — Time Decay Hedging Pressure")
     charm_data = []
     for exp, chain in chains.items():
         ch = compute_charm_for_expiry(chain["calls"], chain["puts"], spot)
         dte = chain["calls"]["daysToExpiration"].iloc[0] if not chain["calls"].empty else 0
         charm_data.append({"Expiry": exp, "Label": chain["label"],
-                           "DTE": dte, "Charm (delta/day)": f"{ch:,.0f}"})
+                           "DTE": f"{dte:.0f}", "Charm (delta/day)": f"{ch:,.0f}"})
     if charm_data:
         st.dataframe(pd.DataFrame(charm_data), width="stretch", hide_index=True)
 
@@ -368,7 +352,6 @@ with tab3:
     fig_prof.add_hline(y=0, line_dash="dash", line_color="gray")
     fig_prof.add_vline(x=0, line_dash="dot", line_color="white")
 
-    # Mark crash levels
     for cp in [-5, -10, -15, -20]:
         gp_val = float(np.interp(cp, profile["pct_move"], profile["gex_plus"]))
         color = theme["red"] if gp_val < 0 else theme["green"]
@@ -404,8 +387,7 @@ with tab3:
             st.markdown(f"""<div class="crash-card {sev_class}">
                 <div style="font-size:20px;font-weight:bold;font-family:monospace;">{cp}%</div>
                 <div style="font-size:11px;color:{theme['muted']};margin-top:4px;">
-                    CRASH SPOT: {cs:,.0f}<br>
-                    MARKET IV: ~{20+abs(cp)*0.4:.0f}%
+                    CRASH SPOT: {cs:,.0f}<br>MARKET IV: ~{20+abs(cp)*0.4:.0f}%
                 </div>
                 <div style="font-size:28px;font-weight:bold;font-family:monospace;margin:8px 0;
                             color:{'#FF4444' if gp < 0 else '#44FF44'};">
@@ -428,7 +410,6 @@ with tab4:
 
     bl = breeden_litzenberger(front_calls, front_puts, spot)
     if bl:
-        # Percentile boxes
         st.markdown(f"**{front_exp} — {bl['dte']:.0f} DTE**")
         pcols = st.columns(5)
         for col, (pct, label) in zip(pcols, [(5, "5th"), (25, "25th"), (50, "MEDIAN"), (75, "75th"), (95, "95th")]):
@@ -443,7 +424,6 @@ with tab4:
                     f"**ATM IV:** {bl['atm_iv']*100:.1f}% · "
                     f"**Skew:** {bl['skew']:.3f} · **Kurtosis:** {bl['kurt']:.2f}")
 
-        # Probability table
         if bl["prob_table"]:
             prob_df = pd.DataFrame(bl["prob_table"])
             prob_df.columns = ["SPX Level", "P(below)", "P(above)"]
@@ -451,12 +431,11 @@ with tab4:
             prob_df["P(above)"] = prob_df["P(above)"].apply(lambda x: f"{x:.1f}%")
             st.dataframe(prob_df, width="stretch", hide_index=True)
 
-        # Density chart
         if len(bl["density_strikes"]) > 5:
             fig_den = go.Figure()
             fig_den.add_trace(go.Scatter(
                 x=bl["density_strikes"], y=bl["density_vals"],
-                fill="tozeroy", fillcolor=f"rgba(0,150,200,0.3)",
+                fill="tozeroy", fillcolor="rgba(0,150,200,0.3)",
                 line=dict(color=theme["blue"], width=2), name="RN Density"))
             fig_den.add_vline(x=spot, line_dash="dash", line_color="white",
                 annotation_text=f"SPX {spot:.0f}")
@@ -493,7 +472,7 @@ with tab5:
         n_cols = 50
         gex_matrix = np.tile(gex_field.reshape(-1, 1), (1, n_cols))
         charm_matrix = np.tile(charm_field.reshape(-1, 1), (1, n_cols))
-        x_labels = [""] * n_cols
+        x_labels = list(range(n_cols))
 
         gcol, ccol = st.columns(2)
 
@@ -543,7 +522,6 @@ with tab5:
                 margin=dict(l=50, r=60, t=30, b=30))
             st.plotly_chart(fig_c, width="stretch")
 
-        # Key levels
         spot_idx = int(spot - price_grid[0])
         if 0 <= spot_idx < len(gex_field):
             spot_gex = gex_field[spot_idx]
@@ -554,6 +532,6 @@ with tab5:
     else:
         st.warning("No 0DTE chain available.")
 
-# ── Footer ──
+# Footer
 st.divider()
 st.caption(f"Data: Barchart · Spot: tvdatafeed TVC:SPX · Last refresh: {ts}")
