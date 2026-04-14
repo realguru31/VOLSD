@@ -1,0 +1,8 @@
+streamlit
+plotly
+pandas
+numpy
+scipy
+requests
+pytz
+tvdatafeed
