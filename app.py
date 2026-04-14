@@ -466,13 +466,60 @@ with tab5:
         charm_raw = [r["net_charm"] for r in raw_wide]
 
         price_grid = np.arange(int(lo), int(hi) + 1, 1.0)
-        gex_field = kde_field(strikes_raw, gex_raw, price_grid, sigma=20)
-        charm_field = kde_field(strikes_raw, charm_raw, price_grid, sigma=25)
+
+        # Tighter KDE sigma=10 to preserve strike-level banding
+        gex_field = kde_field(strikes_raw, gex_raw, price_grid, sigma=10)
+        charm_field = kde_field(strikes_raw, charm_raw, price_grid, sigma=12)
+
+        # Power-scale: sign-preserving sqrt to compress extremes, reveal mid-range
+        def power_scale(arr, power=0.5):
+            return np.sign(arr) * np.abs(arr) ** power
+
+        gex_display = power_scale(gex_field, 0.5)
+        charm_display = power_scale(charm_field, 0.5)
 
         n_cols = 50
-        gex_matrix = np.tile(gex_field.reshape(-1, 1), (1, n_cols))
-        charm_matrix = np.tile(charm_field.reshape(-1, 1), (1, n_cols))
+        gex_matrix = np.tile(gex_display.reshape(-1, 1), (1, n_cols))
+        charm_matrix = np.tile(charm_display.reshape(-1, 1), (1, n_cols))
         x_labels = list(range(n_cols))
+
+        # Gamma colorscale with rich mid-tones
+        gamma_colorscale = [
+            [0, "#CC1111"],
+            [0.10, "#AA2222"],
+            [0.20, "#883333"],
+            [0.30, "#663333"],
+            [0.38, "#442222"],
+            [0.44, "#2a1111"],
+            [0.48, "#150808"],
+            [0.50, "#080808"],
+            [0.52, "#081508"],
+            [0.56, "#112a11"],
+            [0.62, "#224422"],
+            [0.70, "#336633"],
+            [0.80, "#448844"],
+            [0.90, "#55AA55"],
+            [1, "#66CC66"],
+        ]
+
+        # Charm colorscale with rich mid-tones
+        charm_colorscale = [
+            [0, "#CC8800"],
+            [0.10, "#AA7722"],
+            [0.20, "#886633"],
+            [0.30, "#665522"],
+            [0.38, "#443311"],
+            [0.44, "#2a1a08"],
+            [0.48, "#150f05"],
+            [0.50, "#080808"],
+            [0.52, "#050815"],
+            [0.56, "#081a2a"],
+            [0.62, "#113344"],
+            [0.70, "#225566"],
+            [0.80, "#337788"],
+            [0.90, "#4499AA"],
+            [1, "#55BBCC"],
+        ]
 
         gcol, ccol = st.columns(2)
 
@@ -481,19 +528,15 @@ with tab5:
             fig_g = go.Figure()
             fig_g.add_trace(go.Heatmap(
                 z=gex_matrix, y=price_grid, x=x_labels,
-                colorscale=[
-                    [0, "#991111"], [0.15, "#772222"], [0.30, "#552222"],
-                    [0.42, "#331111"], [0.48, "#1a0a0a"], [0.5, "#0a0a0a"],
-                    [0.52, "#0a1a0a"], [0.58, "#113311"], [0.70, "#225522"],
-                    [0.85, "#337733"], [1, "#44AA44"],
-                ],
-                zmid=0, zsmooth="best", colorbar=dict(title="GEX ($B)"),
-                hovertemplate="Strike: %{y:.0f}<br>GEX: %{z:.3f}B<extra></extra>",
+                colorscale=gamma_colorscale,
+                zmid=0, zsmooth="best",
+                colorbar=dict(title="GEX"),
+                hovertemplate="Strike: %{y:.0f}<br>GEX: %{z:.3f}<extra></extra>",
             ))
-            fig_g.add_hline(y=spot, line_color="white", line_width=2.5,
+            fig_g.add_hline(y=spot, line_color="white", line_width=2,
                 annotation_text=f"SPX {spot:.0f}", annotation_position="top left",
                 annotation_font=dict(color="white", size=11))
-            fig_g.update_layout(template=theme["template"], height=600,
+            fig_g.update_layout(template=theme["template"], height=650,
                 yaxis_title="SPX Level", yaxis=dict(dtick=25),
                 xaxis=dict(showticklabels=False, showgrid=False),
                 margin=dict(l=50, r=60, t=30, b=30))
@@ -504,19 +547,15 @@ with tab5:
             fig_c = go.Figure()
             fig_c.add_trace(go.Heatmap(
                 z=charm_matrix, y=price_grid, x=x_labels,
-                colorscale=[
-                    [0, "#BB7700"], [0.15, "#996622"], [0.30, "#665522"],
-                    [0.42, "#332211"], [0.48, "#1a0f05"], [0.5, "#0a0a0a"],
-                    [0.52, "#050a1a"], [0.58, "#112244"], [0.70, "#224488"],
-                    [0.85, "#2266AA"], [1, "#1188DD"],
-                ],
-                zmid=0, zsmooth="best", colorbar=dict(title="Charm"),
+                colorscale=charm_colorscale,
+                zmid=0, zsmooth="best",
+                colorbar=dict(title="Charm"),
                 hovertemplate="Strike: %{y:.0f}<br>Charm: %{z:.0f}<extra></extra>",
             ))
-            fig_c.add_hline(y=spot, line_color="white", line_width=2.5,
+            fig_c.add_hline(y=spot, line_color="white", line_width=2,
                 annotation_text=f"SPX {spot:.0f}", annotation_position="top left",
                 annotation_font=dict(color="white", size=11))
-            fig_c.update_layout(template=theme["template"], height=600,
+            fig_c.update_layout(template=theme["template"], height=650,
                 yaxis_title="SPX Level", yaxis=dict(dtick=25),
                 xaxis=dict(showticklabels=False, showgrid=False),
                 margin=dict(l=50, r=60, t=30, b=30))
