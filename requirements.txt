@@ -5,4 +5,4 @@ numpy
 scipy
 requests
 pytz
-git+https://github.com/StreamAlpha/tvdatafeed.git
+git+https://github.com/rongardF/tvdatafeed.git
