@@ -298,7 +298,7 @@ with tab1:
                            font=dict(color="#5555FF", size=12), bgcolor="rgba(0,0,80,0.6)")
     fig_hm.update_layout(template=theme["template"], height=550,
                           xaxis_title="Spot Move (%)", yaxis_title="IV Shock (vol pts)")
-    st.plotly_chart(fig_hm, use_container_width=True)
+    st.plotly_chart(fig_hm, width="stretch")
 
     # Summary below heatmap
     c0 = surface[np.argmin(np.abs(iv_shocks)), np.argmin(np.abs(spot_pcts))]
@@ -333,7 +333,7 @@ with tab2:
         fig_gex.update_layout(template=theme["template"], height=700, barmode="group")
         fig_gex.update_yaxes(title_text="GEX+ ($M)", row=1, col=1)
         fig_gex.update_yaxes(title_text="$M", row=2, col=1)
-        st.plotly_chart(fig_gex, use_container_width=True)
+        st.plotly_chart(fig_gex, width="stretch")
 
     # Charm per month
     st.markdown("#### Charm — Time Decay Hedging Pressure")
@@ -344,7 +344,7 @@ with tab2:
         charm_data.append({"Expiry": exp, "Label": chain["label"],
                            "DTE": dte, "Charm (delta/day)": f"{ch:,.0f}"})
     if charm_data:
-        st.dataframe(pd.DataFrame(charm_data), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(charm_data), width="stretch", hide_index=True)
 
 
 # ── TAB 3: CRASH RISK ──
@@ -383,7 +383,7 @@ with tab3:
         font=dict(size=11, color="white"), bgcolor="rgba(0,0,0,0.8)", bordercolor="white")
     fig_prof.update_layout(template=theme["template"], height=400,
         xaxis_title="Spot Move (%)", yaxis_title="GEX+ ($M)", hovermode="x unified")
-    st.plotly_chart(fig_prof, use_container_width=True)
+    st.plotly_chart(fig_prof, width="stretch")
 
     # Crash cards
     st.markdown("#### Crash Risk — GEX+ at Drawdown Levels")
@@ -449,7 +449,7 @@ with tab4:
             prob_df.columns = ["SPX Level", "P(below)", "P(above)"]
             prob_df["P(below)"] = prob_df["P(below)"].apply(lambda x: f"{x:.1f}%")
             prob_df["P(above)"] = prob_df["P(above)"].apply(lambda x: f"{x:.1f}%")
-            st.dataframe(prob_df, use_container_width=True, hide_index=True)
+            st.dataframe(prob_df, width="stretch", hide_index=True)
 
         # Density chart
         if len(bl["density_strikes"]) > 5:
@@ -464,7 +464,7 @@ with tab4:
                 annotation_text=f"BL Mean {bl['mean']:.0f}")
             fig_den.update_layout(template=theme["template"], height=350,
                 xaxis_title="SPX at Expiry", yaxis_title="Probability Density")
-            st.plotly_chart(fig_den, use_container_width=True)
+            st.plotly_chart(fig_den, width="stretch")
     else:
         st.warning("Insufficient OTM option data for Breeden-Litzenberger density extraction.")
 
@@ -518,7 +518,7 @@ with tab5:
                 yaxis_title="SPX Level", yaxis=dict(dtick=25),
                 xaxis=dict(showticklabels=False, showgrid=False),
                 margin=dict(l=50, r=60, t=30, b=30))
-            st.plotly_chart(fig_g, use_container_width=True)
+            st.plotly_chart(fig_g, width="stretch")
 
         with ccol:
             st.markdown(f"**Charm** — {ts}")
@@ -541,7 +541,7 @@ with tab5:
                 yaxis_title="SPX Level", yaxis=dict(dtick=25),
                 xaxis=dict(showticklabels=False, showgrid=False),
                 margin=dict(l=50, r=60, t=30, b=30))
-            st.plotly_chart(fig_c, use_container_width=True)
+            st.plotly_chart(fig_c, width="stretch")
 
         # Key levels
         spot_idx = int(spot - price_grid[0])
