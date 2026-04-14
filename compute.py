@@ -347,7 +347,7 @@ def breeden_litzenberger(calls, puts, spot, r=0.05):
     density_vals = np.array(density_vals)
 
     # Normalize density
-    total_area = np.trapz(density_vals, density_strikes)
+    total_area = np.trapezoid(density_vals, density_strikes)
     if total_area > 0:
         density_vals = density_vals / total_area
 
@@ -356,12 +356,12 @@ def breeden_litzenberger(calls, puts, spot, r=0.05):
     cdf_vals = np.clip(cdf_vals / cdf_vals[-1], 0, 1)  # normalize to [0,1]
 
     # Moments
-    mean = np.trapz(density_strikes * density_vals, density_strikes)
-    var = np.trapz((density_strikes - mean)**2 * density_vals, density_strikes)
+    mean = np.trapezoid(density_strikes * density_vals, density_strikes)
+    var = np.trapezoid((density_strikes - mean)**2 * density_vals, density_strikes)
     std = np.sqrt(max(var, 0))
     if std > 0:
-        skew = np.trapz((density_strikes - mean)**3 * density_vals, density_strikes) / std**3
-        kurt = np.trapz((density_strikes - mean)**4 * density_vals, density_strikes) / std**4
+        skew = np.trapezoid((density_strikes - mean)**3 * density_vals, density_strikes) / std**3
+        kurt = np.trapezoid((density_strikes - mean)**4 * density_vals, density_strikes) / std**4
     else:
         skew, kurt = 0, 3
 
