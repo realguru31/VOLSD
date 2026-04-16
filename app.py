@@ -458,67 +458,47 @@ with tab5:
 
         raw_exp = compute_raw_exposures(dte_calls, dte_puts, spot)
 
+        # Wider view: ±3% of spot
         lo, hi = spot * 0.97, spot * 1.03
-        margin = 150
+        margin = 80
         raw_wide = [r for r in raw_exp if (lo - margin) <= r["strike"] <= (hi + margin)]
         strikes_raw = [r["strike"] for r in raw_wide]
         gex_raw = [r["net_gex"] for r in raw_wide]
         charm_raw = [r["net_charm"] for r in raw_wide]
 
-        price_grid = np.arange(int(lo), int(hi) + 1, 1.0)
+        # Fine grid: 0.5pt resolution
+        price_grid = np.arange(lo, hi + 0.5, 0.5)
 
-        # Tighter KDE sigma=10 to preserve strike-level banding
-        gex_field = kde_field(strikes_raw, gex_raw, price_grid, sigma=10)
-        charm_field = kde_field(strikes_raw, charm_raw, price_grid, sigma=12)
+        # TIGHT KDE (sigma=4) — preserves strike-level peaks and valleys
+        gex_field = kde_field(strikes_raw, gex_raw, price_grid, sigma=4)
+        charm_field = kde_field(strikes_raw, charm_raw, price_grid, sigma=5)
 
-        # Power-scale: sign-preserving sqrt to compress extremes, reveal mid-range
-        def power_scale(arr, power=0.5):
+        # Power scale to compress extremes and show mid-range variation
+        def power_scale(arr, power=0.4):
             return np.sign(arr) * np.abs(arr) ** power
 
-        gex_display = power_scale(gex_field, 0.5)
-        charm_display = power_scale(charm_field, 0.5)
+        gex_display = power_scale(gex_field, 0.4)
+        charm_display = power_scale(charm_field, 0.4)
 
         n_cols = 50
         gex_matrix = np.tile(gex_display.reshape(-1, 1), (1, n_cols))
         charm_matrix = np.tile(charm_display.reshape(-1, 1), (1, n_cols))
         x_labels = list(range(n_cols))
 
-        # Gamma colorscale with rich mid-tones
         gamma_colorscale = [
-            [0, "#CC1111"],
-            [0.10, "#AA2222"],
-            [0.20, "#883333"],
-            [0.30, "#663333"],
-            [0.38, "#442222"],
-            [0.44, "#2a1111"],
-            [0.48, "#150808"],
-            [0.50, "#080808"],
-            [0.52, "#081508"],
-            [0.56, "#112a11"],
-            [0.62, "#224422"],
-            [0.70, "#336633"],
-            [0.80, "#448844"],
-            [0.90, "#55AA55"],
-            [1, "#66CC66"],
+            [0, "#CC1111"], [0.10, "#AA2222"], [0.20, "#883333"],
+            [0.30, "#663333"], [0.38, "#442222"], [0.44, "#2a1111"],
+            [0.48, "#150808"], [0.50, "#080808"], [0.52, "#081508"],
+            [0.56, "#112a11"], [0.62, "#224422"], [0.70, "#336633"],
+            [0.80, "#448844"], [0.90, "#55AA55"], [1, "#66CC66"],
         ]
 
-        # Charm colorscale with rich mid-tones
         charm_colorscale = [
-            [0, "#CC8800"],
-            [0.10, "#AA7722"],
-            [0.20, "#886633"],
-            [0.30, "#665522"],
-            [0.38, "#443311"],
-            [0.44, "#2a1a08"],
-            [0.48, "#150f05"],
-            [0.50, "#080808"],
-            [0.52, "#050815"],
-            [0.56, "#081a2a"],
-            [0.62, "#113344"],
-            [0.70, "#225566"],
-            [0.80, "#337788"],
-            [0.90, "#4499AA"],
-            [1, "#55BBCC"],
+            [0, "#CC8800"], [0.10, "#AA7722"], [0.20, "#886633"],
+            [0.30, "#665522"], [0.38, "#443311"], [0.44, "#2a1a08"],
+            [0.48, "#150f05"], [0.50, "#080808"], [0.52, "#050815"],
+            [0.56, "#081a2a"], [0.62, "#113344"], [0.70, "#225566"],
+            [0.80, "#337788"], [0.90, "#4499AA"], [1, "#55BBCC"],
         ]
 
         gcol, ccol = st.columns(2)
@@ -561,7 +541,7 @@ with tab5:
                 margin=dict(l=50, r=60, t=30, b=30))
             st.plotly_chart(fig_c, width="stretch")
 
-        spot_idx = int(spot - price_grid[0])
+        spot_idx = int((spot - price_grid[0]) / 0.5)
         if 0 <= spot_idx < len(gex_field):
             spot_gex = gex_field[spot_idx]
             st.markdown(f"**At spot:** GEX={spot_gex:.3f}B → "
