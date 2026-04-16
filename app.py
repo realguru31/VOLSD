@@ -7,8 +7,11 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
+import os
+import pickle
+import time
 
 from fetch import (create_session, fetch_spot, get_expiries, fetch_full_chain)
 from compute import (compute_gex_vex, find_zero_gamma, build_gex_profile,
@@ -97,7 +100,81 @@ else:
 
 
 # ═══════════════════════════════════════
-# Data Loading
+# Snapshot Storage Setup
+# ═══════════════════════════════════════
+SNAPSHOT_DIR = "snapshots"
+os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+
+
+def snapshot_file_for_today():
+    """Returns path for today's snapshot file (ET date)."""
+    et_date = datetime.now(pytz.timezone("US/Eastern")).strftime("%Y%m%d")
+    return os.path.join(SNAPSHOT_DIR, f"intervals_{et_date}.pkl")
+
+
+def load_snapshots():
+    """Load today's accumulated snapshots. Returns list of dicts or []."""
+    path = snapshot_file_for_today()
+    if os.path.exists(path):
+        try:
+            with open(path, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            return []
+    return []
+
+
+def save_snapshot(snapshot):
+    """Append a snapshot to today's file."""
+    snapshots = load_snapshots()
+    # Dedupe by minute bucket (avoid double-saving same minute)
+    et_now = datetime.now(pytz.timezone("US/Eastern"))
+    minute_key = et_now.strftime("%H%M")
+    snapshots = [s for s in snapshots if s.get("minute_key") != minute_key]
+    snapshot["minute_key"] = minute_key
+    snapshots.append(snapshot)
+    path = snapshot_file_for_today()
+    with open(path, "wb") as f:
+        pickle.dump(snapshots, f)
+
+
+def take_interval_snapshot():
+    """Fetch 0DTE chain fresh and compute per-strike GEX. Saves to disk."""
+    sess, headers = create_session()
+    spot_now = fetch_spot(sess, headers)
+    if not spot_now:
+        return False
+
+    weekly, monthly = get_expiries(sess, headers)
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    future_weekly = [e for e in weekly if e >= today_str]
+    if not future_weekly:
+        return False
+    nearest = future_weekly[0]
+
+    calls, puts = fetch_full_chain(sess, headers, nearest, is_dense=False)
+    if calls.empty or puts.empty:
+        return False
+
+    # Compute GEX per strike
+    gex_df = compute_gex_vex(calls, puts, spot_now)
+
+    et_now = datetime.now(pytz.timezone("US/Eastern"))
+    snapshot = {
+        "timestamp": et_now.isoformat(),
+        "time_label": et_now.strftime("%I:%M %p"),
+        "spot": spot_now,
+        "expiry": nearest,
+        "strikes": gex_df["strike"].tolist(),
+        "gex_plus": gex_df["gex_plus"].tolist(),
+        "gex": gex_df["gex"].tolist(),
+    }
+    save_snapshot(snapshot)
+    return True
+
+
+# ═══════════════════════════════════════
+# Data Loading (cached — main dashboard data)
 # ═══════════════════════════════════════
 
 @st.cache_data(ttl=300)
@@ -228,8 +305,9 @@ st.divider()
 # ═══════════════════════════════════════
 # Tabs
 # ═══════════════════════════════════════
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "HEATMAP", "RISK ANALYSIS", "CRASH RISK", "FORECAST", "0DTE GRADIENT"
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "HEATMAP", "RISK ANALYSIS", "CRASH RISK", "FORECAST",
+    "0DTE PROFILE", "INTERVAL MAP"
 ])
 
 
@@ -244,15 +322,12 @@ with tab1:
     with st.spinner("Computing risk surface..."):
         surface = build_risk_surface(front_calls, front_puts, spot, spot_pcts, iv_shocks)
 
-    # Numeric axes
-    x_vals = (spot_pcts * 100).tolist()   # [-15, ..., 10]
-    y_vals = (iv_shocks * 100).tolist()   # [-10, ..., 40]
+    x_vals = (spot_pcts * 100).tolist()
+    y_vals = (iv_shocks * 100).tolist()
 
     fig_hm = go.Figure()
     fig_hm.add_trace(go.Heatmap(
-        z=surface,
-        x=x_vals,
-        y=y_vals,
+        z=surface, x=x_vals, y=y_vals,
         colorscale=[
             [0, "#8B0000"], [0.20, "#CC2222"], [0.40, "#441111"],
             [0.48, "#1a0505"], [0.5, "#0a0a0a"], [0.52, "#05051a"],
@@ -262,8 +337,6 @@ with tab1:
         colorbar=dict(title="GEX+ ($M)"),
         hovertemplate="Spot: %{x:.0f}%<br>IV: %{y:.0f}pts<br>GEX+: %{z:.1f}M<extra></extra>",
     ))
-
-    # Crosshairs at 0,0
     fig_hm.add_hline(y=0, line_dash="dash", line_color="white", line_width=1.5)
     fig_hm.add_vline(x=0, line_dash="dash", line_color="white", line_width=1.5)
     fig_hm.add_annotation(x=0, y=0, text="◉", showarrow=False,
@@ -273,7 +346,6 @@ with tab1:
     fig_hm.add_annotation(x=7, y=-7, text="SAFE ZONE", showarrow=False,
                            font=dict(color="#5555FF", size=12), bgcolor="rgba(0,0,80,0.6)")
 
-    # Spot labels along top
     for pv in [-10, -5, 0, 5, 10]:
         s = spot * (1 + pv / 100)
         fig_hm.add_annotation(x=pv, y=max(y_vals) + 3, text=f"SPX {s:,.0f}",
@@ -368,15 +440,12 @@ with tab3:
         xaxis_title="Spot Move (%)", yaxis_title="GEX+ ($M)", hovermode="x unified")
     st.plotly_chart(fig_prof, width="stretch")
 
-    # Crash cards
     st.markdown("#### Crash Risk — GEX+ at Drawdown Levels")
     crash_cols = st.columns(4)
     for i, cp in enumerate([-5, -10, -15, -20]):
         cs = spot * (1 + cp / 100)
         gex, vex, gp = compute_gex_plus_at_spot(front_calls, front_puts, cs)
-        if gp < -50:
-            sev, sev_class = "ELEVATED", "crash-elevated"
-        elif gp < 0:
+        if gp < 0:
             sev, sev_class = "ELEVATED", "crash-elevated"
         elif gp < 50:
             sev, sev_class = "NEUTRAL", "crash-neutral"
@@ -448,9 +517,10 @@ with tab4:
         st.warning("Insufficient OTM option data for Breeden-Litzenberger density extraction.")
 
 
-# ── TAB 5: 0DTE GRADIENT ──
+# ── TAB 5: 0DTE PROFILE (single-snapshot filled curves) ──
 with tab5:
-    st.markdown("#### 0DTE Gamma & Charm Gradient")
+    st.markdown("#### 0DTE Exposure Profile — Current Snapshot")
+    st.caption("Vertical slice of current exposure curve. Blue = positive, Gold = negative.")
 
     if nearest_exp and nearest_exp in chains:
         dte_calls = chains[nearest_exp]["calls"]
@@ -458,98 +528,285 @@ with tab5:
 
         raw_exp = compute_raw_exposures(dte_calls, dte_puts, spot)
 
-        # Wider view: ±3% of spot
-        lo, hi = spot * 0.97, spot * 1.03
-        margin = 80
-        raw_wide = [r for r in raw_exp if (lo - margin) <= r["strike"] <= (hi + margin)]
-        strikes_raw = [r["strike"] for r in raw_wide]
-        gex_raw = [r["net_gex"] for r in raw_wide]
-        charm_raw = [r["net_charm"] for r in raw_wide]
+        # View range ±2%
+        lo, hi = spot * 0.98, spot * 1.02
+        filtered = [r for r in raw_exp if lo <= r["strike"] <= hi]
+        strikes = np.array([r["strike"] for r in filtered])
+        gex_vals = np.array([r["net_gex"] for r in filtered])
+        charm_vals = np.array([r["net_charm"] for r in filtered])
 
-        # Fine grid: 0.5pt resolution
-        price_grid = np.arange(lo, hi + 0.5, 0.5)
+        if len(strikes) > 5:
+            gcol, ccol = st.columns(2)
 
-        # TIGHT KDE (sigma=4) — preserves strike-level peaks and valleys
-        gex_field = kde_field(strikes_raw, gex_raw, price_grid, sigma=4)
-        charm_field = kde_field(strikes_raw, charm_raw, price_grid, sigma=5)
+            # GAMMA FILLED CURVE (X=gex value, Y=strike)
+            with gcol:
+                st.markdown(f"**Gamma** — {ts}")
+                fig_g = go.Figure()
 
-        # Power scale to compress extremes and show mid-range variation
-        def power_scale(arr, power=0.4):
-            return np.sign(arr) * np.abs(arr) ** power
+                # Positive fill (green)
+                pos_mask = gex_vals >= 0
+                if pos_mask.any():
+                    fig_g.add_trace(go.Scatter(
+                        x=np.where(pos_mask, gex_vals, 0),
+                        y=strikes, fill="tozerox",
+                        fillcolor="rgba(60,180,60,0.5)",
+                        line=dict(color="#44CC44", width=2),
+                        name="Dampening (+)", mode="lines",
+                    ))
 
-        gex_display = power_scale(gex_field, 0.4)
-        charm_display = power_scale(charm_field, 0.4)
+                # Negative fill (red)
+                neg_mask = gex_vals < 0
+                if neg_mask.any():
+                    fig_g.add_trace(go.Scatter(
+                        x=np.where(neg_mask, gex_vals, 0),
+                        y=strikes, fill="tozerox",
+                        fillcolor="rgba(220,60,60,0.5)",
+                        line=dict(color="#CC4444", width=2),
+                        name="Amplifying (-)", mode="lines",
+                    ))
 
-        n_cols = 50
-        gex_matrix = np.tile(gex_display.reshape(-1, 1), (1, n_cols))
-        charm_matrix = np.tile(charm_display.reshape(-1, 1), (1, n_cols))
-        x_labels = list(range(n_cols))
+                fig_g.add_vline(x=0, line_color="gray", line_dash="dash")
+                fig_g.add_hline(y=spot, line_color="white", line_width=2,
+                    annotation_text=f"SPX {spot:.0f}")
 
-        gamma_colorscale = [
-            [0, "#CC1111"], [0.10, "#AA2222"], [0.20, "#883333"],
-            [0.30, "#663333"], [0.38, "#442222"], [0.44, "#2a1111"],
-            [0.48, "#150808"], [0.50, "#080808"], [0.52, "#081508"],
-            [0.56, "#112a11"], [0.62, "#224422"], [0.70, "#336633"],
-            [0.80, "#448844"], [0.90, "#55AA55"], [1, "#66CC66"],
-        ]
+                fig_g.update_layout(
+                    template=theme["template"], height=600,
+                    xaxis_title="Net GEX ($B)", yaxis_title="Strike",
+                    hovermode="y unified",
+                )
+                st.plotly_chart(fig_g, width="stretch")
 
-        charm_colorscale = [
-            [0, "#CC8800"], [0.10, "#AA7722"], [0.20, "#886633"],
-            [0.30, "#665522"], [0.38, "#443311"], [0.44, "#2a1a08"],
-            [0.48, "#150f05"], [0.50, "#080808"], [0.52, "#050815"],
-            [0.56, "#081a2a"], [0.62, "#113344"], [0.70, "#225566"],
-            [0.80, "#337788"], [0.90, "#4499AA"], [1, "#55BBCC"],
-        ]
+            # CHARM FILLED CURVE (X=charm value, Y=strike)
+            with ccol:
+                st.markdown(f"**Charm** — {ts}")
+                fig_c = go.Figure()
 
-        gcol, ccol = st.columns(2)
+                pos_mask = charm_vals >= 0
+                if pos_mask.any():
+                    fig_c.add_trace(go.Scatter(
+                        x=np.where(pos_mask, charm_vals, 0),
+                        y=strikes, fill="tozerox",
+                        fillcolor="rgba(50,140,220,0.5)",
+                        line=dict(color="#1188DD", width=2),
+                        name="Buying support (+)", mode="lines",
+                    ))
 
-        with gcol:
-            st.markdown(f"**Gamma** — {ts}")
-            fig_g = go.Figure()
-            fig_g.add_trace(go.Heatmap(
-                z=gex_matrix, y=price_grid, x=x_labels,
-                colorscale=gamma_colorscale,
-                zmid=0, zsmooth="best",
-                colorbar=dict(title="GEX"),
-                hovertemplate="Strike: %{y:.0f}<br>GEX: %{z:.3f}<extra></extra>",
-            ))
-            fig_g.add_hline(y=spot, line_color="white", line_width=2,
-                annotation_text=f"SPX {spot:.0f}", annotation_position="top left",
-                annotation_font=dict(color="white", size=11))
-            fig_g.update_layout(template=theme["template"], height=650,
-                yaxis_title="SPX Level", yaxis=dict(dtick=25),
-                xaxis=dict(showticklabels=False, showgrid=False),
-                margin=dict(l=50, r=60, t=30, b=30))
-            st.plotly_chart(fig_g, width="stretch")
+                neg_mask = charm_vals < 0
+                if neg_mask.any():
+                    fig_c.add_trace(go.Scatter(
+                        x=np.where(neg_mask, charm_vals, 0),
+                        y=strikes, fill="tozerox",
+                        fillcolor="rgba(200,140,0,0.5)",
+                        line=dict(color="#CC8800", width=2),
+                        name="Selling pressure (-)", mode="lines",
+                    ))
 
-        with ccol:
-            st.markdown(f"**Charm** — {ts}")
-            fig_c = go.Figure()
-            fig_c.add_trace(go.Heatmap(
-                z=charm_matrix, y=price_grid, x=x_labels,
-                colorscale=charm_colorscale,
-                zmid=0, zsmooth="best",
-                colorbar=dict(title="Charm"),
-                hovertemplate="Strike: %{y:.0f}<br>Charm: %{z:.0f}<extra></extra>",
-            ))
-            fig_c.add_hline(y=spot, line_color="white", line_width=2,
-                annotation_text=f"SPX {spot:.0f}", annotation_position="top left",
-                annotation_font=dict(color="white", size=11))
-            fig_c.update_layout(template=theme["template"], height=650,
-                yaxis_title="SPX Level", yaxis=dict(dtick=25),
-                xaxis=dict(showticklabels=False, showgrid=False),
-                margin=dict(l=50, r=60, t=30, b=30))
-            st.plotly_chart(fig_c, width="stretch")
+                fig_c.add_vline(x=0, line_color="gray", line_dash="dash")
+                fig_c.add_hline(y=spot, line_color="white", line_width=2,
+                    annotation_text=f"SPX {spot:.0f}")
 
-        spot_idx = int((spot - price_grid[0]) / 0.5)
-        if 0 <= spot_idx < len(gex_field):
-            spot_gex = gex_field[spot_idx]
-            st.markdown(f"**At spot:** GEX={spot_gex:.3f}B → "
-                        f"{'DAMPENING' if spot_gex > 0 else 'AMPLIFYING'} · "
-                        f"**Max dampening:** {price_grid[np.argmax(gex_field)]:.0f} · "
-                        f"**Max amplifying:** {price_grid[np.argmin(gex_field)]:.0f}")
+                fig_c.update_layout(
+                    template=theme["template"], height=600,
+                    xaxis_title="Net Charm", yaxis_title="Strike",
+                    hovermode="y unified",
+                )
+                st.plotly_chart(fig_c, width="stretch")
+
+            # Key readings
+            max_gex_idx = np.argmax(np.abs(gex_vals))
+            max_charm_idx = np.argmax(np.abs(charm_vals))
+            st.markdown(
+                f"**Peak GEX:** {gex_vals[max_gex_idx]:+.3f}B at strike {strikes[max_gex_idx]:.0f} · "
+                f"**Peak Charm:** {charm_vals[max_charm_idx]:+,.0f} at strike {strikes[max_charm_idx]:.0f}"
+            )
+        else:
+            st.warning("Not enough strikes in view range.")
     else:
         st.warning("No 0DTE chain available.")
+
+
+# ── TAB 6: INTERVAL MAP (independent refresh) ──
+with tab6:
+    st.markdown("#### Interval Map — 0DTE GEX Over Time")
+    st.caption("Auto-refreshes every 2 minutes during market hours. Green = positive GEX, Red = negative.")
+
+    # Controls row
+    ctrl_cols = st.columns([1.5, 1.5, 1.2, 1.2, 1.5])
+
+    with ctrl_cols[0]:
+        pct_range = st.selectbox(
+            "Y-axis range",
+            options=[0.5, 1.0, 1.5, 2.0],
+            format_func=lambda x: f"±{x}%",
+            index=1,
+            key="pct_range_select",
+        )
+
+    with ctrl_cols[1]:
+        pct_step = st.selectbox(
+            "Strike increment",
+            options=[0.1, 0.25, 0.5],
+            format_func=lambda x: f"{x}%",
+            index=2,
+            key="pct_step_select",
+        )
+
+    with ctrl_cols[2]:
+        auto_refresh = st.toggle("Auto-refresh", value=True, key="auto_refresh_toggle")
+
+    with ctrl_cols[3]:
+        if st.button("🔄 Fetch Now", key="manual_fetch"):
+            with st.spinner("Fetching..."):
+                success = take_interval_snapshot()
+                if success:
+                    st.success("Snapshot added")
+                else:
+                    st.error("Fetch failed")
+
+    with ctrl_cols[4]:
+        if st.button("🗑 Clear Today", key="clear_today"):
+            path = snapshot_file_for_today()
+            if os.path.exists(path):
+                os.remove(path)
+                st.success("Cleared")
+
+    # Auto-refresh logic — only if toggle on and inside market hours
+    if auto_refresh:
+        et_now = datetime.now(pytz.timezone("US/Eastern"))
+        is_weekday = et_now.weekday() < 5
+        market_open = et_now.replace(hour=9, minute=30, second=0, microsecond=0)
+        market_close = et_now.replace(hour=16, minute=0, second=0, microsecond=0)
+        in_market = is_weekday and market_open <= et_now <= market_close
+
+        if in_market:
+            # Track last fetch time in session state
+            if "last_interval_fetch" not in st.session_state:
+                st.session_state.last_interval_fetch = 0
+
+            now_ts = time.time()
+            if now_ts - st.session_state.last_interval_fetch >= 120:  # 2 min
+                take_interval_snapshot()
+                st.session_state.last_interval_fetch = now_ts
+
+            # Schedule next rerun in 120s via meta-refresh hack
+            st.markdown(
+                '<meta http-equiv="refresh" content="120">',
+                unsafe_allow_html=True,
+            )
+
+    # Load and render snapshots
+    snapshots = load_snapshots()
+
+    if not snapshots:
+        st.info("No snapshots yet. Click 'Fetch Now' or wait for auto-refresh.")
+    else:
+        st.caption(f"Snapshots today: **{len(snapshots)}** · "
+                   f"Latest: {snapshots[-1]['time_label']} · "
+                   f"Next auto-fetch in ~{max(0, 120 - int(time.time() - st.session_state.get('last_interval_fetch', 0)))}s")
+
+        # Build grid: Y = pct levels, X = time
+        pct_levels = np.arange(-pct_range, pct_range + pct_step/2, pct_step)
+
+        time_labels = [s["time_label"] for s in snapshots]
+        n_times = len(time_labels)
+        n_levels = len(pct_levels)
+
+        # For each snapshot and each pct level, interpolate GEX+ at that strike
+        gex_grid = np.zeros((n_levels, n_times))
+        for t_idx, snap in enumerate(snapshots):
+            snap_spot = snap["spot"]
+            strikes = np.array(snap["strikes"])
+            gex_plus = np.array(snap["gex_plus"])
+
+            for l_idx, pct in enumerate(pct_levels):
+                target_K = snap_spot * (1 + pct / 100)
+                # Linear interp at target strike
+                if len(strikes) >= 2 and strikes.min() <= target_K <= strikes.max():
+                    gex_grid[l_idx, t_idx] = np.interp(target_K, strikes, gex_plus)
+                else:
+                    gex_grid[l_idx, t_idx] = 0
+
+        # Dot-based scatter (SpotGamma style)
+        y_pcts, x_times = np.meshgrid(pct_levels, range(n_times), indexing="ij")
+        flat_y = y_pcts.flatten()
+        flat_x = x_times.flatten()
+        flat_z = gex_grid.flatten()
+
+        # Dot size: based on magnitude, scaled
+        max_abs = max(np.abs(flat_z).max(), 0.001)
+        sizes = 5 + 30 * (np.abs(flat_z) / max_abs)
+
+        # Colors: green positive, red negative, gray near zero
+        colors = []
+        for v in flat_z:
+            if v > max_abs * 0.05:
+                intensity = min(1.0, v / max_abs)
+                g = int(255 * intensity)
+                colors.append(f"rgb(50,{100+g//2},50)")
+            elif v < -max_abs * 0.05:
+                intensity = min(1.0, -v / max_abs)
+                r = int(255 * intensity)
+                colors.append(f"rgb({100+r//2},50,50)")
+            else:
+                colors.append("rgba(80,80,80,0.3)")
+
+        fig_int = go.Figure()
+        fig_int.add_trace(go.Scatter(
+            x=flat_x, y=flat_y,
+            mode="markers",
+            marker=dict(size=sizes, color=colors,
+                        line=dict(width=0)),
+            hovertemplate="Time: %{customdata}<br>%{y:.2f}%<br>GEX+: %{text}<extra></extra>",
+            text=[f"{v:+.2f}M" for v in flat_z],
+            customdata=[time_labels[int(x)] for x in flat_x],
+            showlegend=False,
+        ))
+
+        # Spot line: 0% reference
+        fig_int.add_hline(y=0, line_color="white", line_width=1.5,
+                           line_dash="dash")
+
+        # Spot price path overlay (as reference line)
+        spot_pct_path = []
+        first_spot = snapshots[0]["spot"]
+        for snap in snapshots:
+            spot_pct_path.append((snap["spot"] / first_spot - 1) * 100)
+
+        fig_int.add_trace(go.Scatter(
+            x=list(range(n_times)),
+            y=spot_pct_path,
+            mode="lines",
+            line=dict(color="#3399FF", width=2),
+            name="SPX",
+            hovertemplate="Time: %{text}<br>Spot: %{customdata:.0f}<extra></extra>",
+            text=time_labels,
+            customdata=[s["spot"] for s in snapshots],
+        ))
+
+        # X-axis tick labels: use time labels
+        tick_vals = list(range(0, n_times, max(1, n_times // 12)))
+        tick_text = [time_labels[i] for i in tick_vals]
+
+        fig_int.update_layout(
+            template=theme["template"], height=600,
+            xaxis=dict(title="Time", tickmode="array",
+                       tickvals=tick_vals, ticktext=tick_text),
+            yaxis=dict(title="% from spot", dtick=pct_step,
+                       range=[-pct_range * 1.05, pct_range * 1.05]),
+            showlegend=False,
+            margin=dict(l=60, r=40, t=30, b=60),
+        )
+        st.plotly_chart(fig_int, width="stretch")
+
+        # Current spot readout
+        latest = snapshots[-1]
+        st.markdown(
+            f"**Current:** SPX {latest['spot']:,.2f} · "
+            f"Expiry: {latest['expiry']} · "
+            f"Day range: {min(s['spot'] for s in snapshots):,.2f} - "
+            f"{max(s['spot'] for s in snapshots):,.2f}"
+        )
+
 
 # Footer
 st.divider()
