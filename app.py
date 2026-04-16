@@ -13,7 +13,8 @@ import os
 import pickle
 import time
 
-from fetch import (create_session, fetch_spot, get_expiries, fetch_full_chain)
+from fetch import (create_session, fetch_spot, fetch_spot_tv, get_expiries,
+                   fetch_full_chain)
 from compute import (compute_gex_vex, find_zero_gamma, build_gex_profile,
                      compute_gex_plus_at_spot, build_risk_surface,
                      compute_raw_exposures, kde_field,
@@ -81,6 +82,27 @@ if st.session_state.dark_mode:
         .crash-elevated { border-left: 4px solid #FF4444; }
         .crash-neutral { border-left: 4px solid #888; }
         .crash-contained { border-left: 4px solid #4444FF; }
+
+        .stButton > button {
+            background-color: #1a1a1a !important;
+            color: #e0e0e0 !important;
+            border: 1px solid #333 !important;
+            font-family: monospace;
+        }
+        .stButton > button:hover {
+            background-color: #2a2a2a !important;
+            border-color: #555 !important;
+            color: #ffffff !important;
+        }
+        div[data-baseweb="select"] > div {
+            background-color: #1a1a1a !important;
+            border-color: #333 !important;
+        }
+        div[data-testid="stAlert"] {
+            background-color: rgba(30,60,30,0.3) !important;
+            border: 1px solid #224422 !important;
+            color: #88CC88 !important;
+        }
     </style>""", unsafe_allow_html=True)
 else:
     st.markdown("""<style>
@@ -100,20 +122,18 @@ else:
 
 
 # ═══════════════════════════════════════
-# Snapshot Storage Setup
+# Snapshot Storage
 # ═══════════════════════════════════════
 SNAPSHOT_DIR = "snapshots"
 os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 
 
 def snapshot_file_for_today():
-    """Returns path for today's snapshot file (ET date)."""
     et_date = datetime.now(pytz.timezone("US/Eastern")).strftime("%Y%m%d")
     return os.path.join(SNAPSHOT_DIR, f"intervals_{et_date}.pkl")
 
 
 def load_snapshots():
-    """Load today's accumulated snapshots. Returns list of dicts or []."""
     path = snapshot_file_for_today()
     if os.path.exists(path):
         try:
@@ -125,9 +145,7 @@ def load_snapshots():
 
 
 def save_snapshot(snapshot):
-    """Append a snapshot to today's file."""
     snapshots = load_snapshots()
-    # Dedupe by minute bucket (avoid double-saving same minute)
     et_now = datetime.now(pytz.timezone("US/Eastern"))
     minute_key = et_now.strftime("%H%M")
     snapshots = [s for s in snapshots if s.get("minute_key") != minute_key]
@@ -139,9 +157,13 @@ def save_snapshot(snapshot):
 
 
 def take_interval_snapshot():
-    """Fetch 0DTE chain fresh and compute per-strike GEX. Saves to disk."""
+    """Fetch 0DTE chain + TV spot, compute per-strike GEX, save snapshot."""
     sess, headers = create_session()
-    spot_now = fetch_spot(sess, headers)
+
+    # Use TV spot for snapshot (more accurate for intraday)
+    spot_now = fetch_spot_tv()
+    if not spot_now:
+        spot_now = fetch_spot(sess, headers)
     if not spot_now:
         return False
 
@@ -156,13 +178,13 @@ def take_interval_snapshot():
     if calls.empty or puts.empty:
         return False
 
-    # Compute GEX per strike
     gex_df = compute_gex_vex(calls, puts, spot_now)
 
     et_now = datetime.now(pytz.timezone("US/Eastern"))
     snapshot = {
         "timestamp": et_now.isoformat(),
         "time_label": et_now.strftime("%I:%M %p"),
+        "unix_ts": et_now.timestamp(),
         "spot": spot_now,
         "expiry": nearest,
         "strikes": gex_df["strike"].tolist(),
@@ -174,7 +196,7 @@ def take_interval_snapshot():
 
 
 # ═══════════════════════════════════════
-# Data Loading (cached — main dashboard data)
+# Main Data Loading (cached)
 # ═══════════════════════════════════════
 
 @st.cache_data(ttl=300)
@@ -226,7 +248,6 @@ nearest_exp = data["nearest"]
 target_monthlies = data["monthlies"]
 ts = data["timestamp"]
 
-# Pre-compute GEX
 gex_data = {}
 for exp, chain in chains.items():
     gex_data[exp] = compute_gex_vex(chain["calls"], chain["puts"], spot)
@@ -517,7 +538,7 @@ with tab4:
         st.warning("Insufficient OTM option data for Breeden-Litzenberger density extraction.")
 
 
-# ── TAB 5: 0DTE PROFILE (single-snapshot filled curves) ──
+# ── TAB 5: 0DTE PROFILE ──
 with tab5:
     st.markdown("#### 0DTE Exposure Profile — Current Snapshot")
     st.caption("Vertical slice of current exposure curve. Blue = positive, Gold = negative.")
@@ -528,7 +549,6 @@ with tab5:
 
         raw_exp = compute_raw_exposures(dte_calls, dte_puts, spot)
 
-        # View range ±2%
         lo, hi = spot * 0.98, spot * 1.02
         filtered = [r for r in raw_exp if lo <= r["strike"] <= hi]
         strikes = np.array([r["strike"] for r in filtered])
@@ -538,12 +558,9 @@ with tab5:
         if len(strikes) > 5:
             gcol, ccol = st.columns(2)
 
-            # GAMMA FILLED CURVE (X=gex value, Y=strike)
             with gcol:
                 st.markdown(f"**Gamma** — {ts}")
                 fig_g = go.Figure()
-
-                # Positive fill (green)
                 pos_mask = gex_vals >= 0
                 if pos_mask.any():
                     fig_g.add_trace(go.Scatter(
@@ -553,8 +570,6 @@ with tab5:
                         line=dict(color="#44CC44", width=2),
                         name="Dampening (+)", mode="lines",
                     ))
-
-                # Negative fill (red)
                 neg_mask = gex_vals < 0
                 if neg_mask.any():
                     fig_g.add_trace(go.Scatter(
@@ -564,23 +579,17 @@ with tab5:
                         line=dict(color="#CC4444", width=2),
                         name="Amplifying (-)", mode="lines",
                     ))
-
                 fig_g.add_vline(x=0, line_color="gray", line_dash="dash")
                 fig_g.add_hline(y=spot, line_color="white", line_width=2,
                     annotation_text=f"SPX {spot:.0f}")
-
-                fig_g.update_layout(
-                    template=theme["template"], height=600,
+                fig_g.update_layout(template=theme["template"], height=600,
                     xaxis_title="Net GEX ($B)", yaxis_title="Strike",
-                    hovermode="y unified",
-                )
+                    hovermode="y unified")
                 st.plotly_chart(fig_g, width="stretch")
 
-            # CHARM FILLED CURVE (X=charm value, Y=strike)
             with ccol:
                 st.markdown(f"**Charm** — {ts}")
                 fig_c = go.Figure()
-
                 pos_mask = charm_vals >= 0
                 if pos_mask.any():
                     fig_c.add_trace(go.Scatter(
@@ -590,7 +599,6 @@ with tab5:
                         line=dict(color="#1188DD", width=2),
                         name="Buying support (+)", mode="lines",
                     ))
-
                 neg_mask = charm_vals < 0
                 if neg_mask.any():
                     fig_c.add_trace(go.Scatter(
@@ -600,19 +608,14 @@ with tab5:
                         line=dict(color="#CC8800", width=2),
                         name="Selling pressure (-)", mode="lines",
                     ))
-
                 fig_c.add_vline(x=0, line_color="gray", line_dash="dash")
                 fig_c.add_hline(y=spot, line_color="white", line_width=2,
                     annotation_text=f"SPX {spot:.0f}")
-
-                fig_c.update_layout(
-                    template=theme["template"], height=600,
+                fig_c.update_layout(template=theme["template"], height=600,
                     xaxis_title="Net Charm", yaxis_title="Strike",
-                    hovermode="y unified",
-                )
+                    hovermode="y unified")
                 st.plotly_chart(fig_c, width="stretch")
 
-            # Key readings
             max_gex_idx = np.argmax(np.abs(gex_vals))
             max_charm_idx = np.argmax(np.abs(charm_vals))
             st.markdown(
@@ -625,52 +628,52 @@ with tab5:
         st.warning("No 0DTE chain available.")
 
 
-# ── TAB 6: INTERVAL MAP (independent refresh) ──
+# ── TAB 6: INTERVAL MAP ──
 with tab6:
     st.markdown("#### Interval Map — 0DTE GEX Over Time")
-    st.caption("Auto-refreshes every 2 minutes during market hours. Green = positive GEX, Red = negative.")
+    st.caption("Y-axis = actual strikes, ±range from spot. Spot line from TVC:SPX. Auto-refresh during market hours.")
 
-    # Controls row
-    ctrl_cols = st.columns([1.5, 1.5, 1.2, 1.2, 1.5])
+    # Controls
+    ctrl_cols = st.columns([1.4, 1.2, 0.9, 0.9, 1.0])
 
     with ctrl_cols[0]:
         pct_range = st.selectbox(
             "Y-axis range",
-            options=[0.5, 1.0, 1.5, 2.0],
+            options=[0.5, 1.0, 1.5, 2.0, 2.5, 3.0],
             format_func=lambda x: f"±{x}%",
             index=1,
             key="pct_range_select",
         )
 
     with ctrl_cols[1]:
-        pct_step = st.selectbox(
-            "Strike increment",
-            options=[0.1, 0.25, 0.5],
-            format_func=lambda x: f"{x}%",
-            index=2,
-            key="pct_step_select",
+        refresh_minutes = st.selectbox(
+            "Refresh every",
+            options=[1, 2, 3],
+            format_func=lambda x: f"{x} min",
+            index=1,
+            key="refresh_min_select",
         )
 
     with ctrl_cols[2]:
-        auto_refresh = st.toggle("Auto-refresh", value=True, key="auto_refresh_toggle")
+        auto_refresh = st.toggle("Auto", value=True, key="auto_refresh_toggle")
 
     with ctrl_cols[3]:
-        if st.button("🔄 Fetch Now", key="manual_fetch"):
+        if st.button("🔄 Fetch", key="manual_fetch"):
             with st.spinner("Fetching..."):
                 success = take_interval_snapshot()
                 if success:
-                    st.success("Snapshot added")
+                    st.success("Added")
                 else:
-                    st.error("Fetch failed")
+                    st.error("Failed")
 
     with ctrl_cols[4]:
-        if st.button("🗑 Clear Today", key="clear_today"):
+        if st.button("🗑 Clear", key="clear_today"):
             path = snapshot_file_for_today()
             if os.path.exists(path):
                 os.remove(path)
                 st.success("Cleared")
 
-    # Auto-refresh logic — only if toggle on and inside market hours
+    # Auto-refresh
     if auto_refresh:
         et_now = datetime.now(pytz.timezone("US/Eastern"))
         is_weekday = et_now.weekday() < 5
@@ -679,64 +682,65 @@ with tab6:
         in_market = is_weekday and market_open <= et_now <= market_close
 
         if in_market:
-            # Track last fetch time in session state
             if "last_interval_fetch" not in st.session_state:
                 st.session_state.last_interval_fetch = 0
 
             now_ts = time.time()
-            if now_ts - st.session_state.last_interval_fetch >= 120:  # 2 min
+            refresh_seconds = refresh_minutes * 60
+            if now_ts - st.session_state.last_interval_fetch >= refresh_seconds:
                 take_interval_snapshot()
                 st.session_state.last_interval_fetch = now_ts
 
-            # Schedule next rerun in 120s via meta-refresh hack
             st.markdown(
-                '<meta http-equiv="refresh" content="120">',
+                f'<meta http-equiv="refresh" content="{refresh_seconds}">',
                 unsafe_allow_html=True,
             )
 
-    # Load and render snapshots
+    # Load snapshots
     snapshots = load_snapshots()
 
     if not snapshots:
-        st.info("No snapshots yet. Click 'Fetch Now' or wait for auto-refresh.")
+        st.info("No snapshots yet. Click 'Fetch' or wait for auto-refresh.")
     else:
+        refresh_sec = refresh_minutes * 60
         st.caption(f"Snapshots today: **{len(snapshots)}** · "
                    f"Latest: {snapshots[-1]['time_label']} · "
-                   f"Next auto-fetch in ~{max(0, 120 - int(time.time() - st.session_state.get('last_interval_fetch', 0)))}s")
+                   f"Next auto-fetch in ~{max(0, refresh_sec - int(time.time() - st.session_state.get('last_interval_fetch', 0)))}s")
 
-        # Build grid: Y = pct levels, X = time
-        pct_levels = np.arange(-pct_range, pct_range + pct_step/2, pct_step)
+        # Build strike grid — actual 5-pt strikes around spot
+        latest_spot = snapshots[-1]["spot"]
+        range_pts = latest_spot * pct_range / 100  # % range converted to points
+        # Round to nearest 5-pt strikes
+        lo_strike = int(round((latest_spot - range_pts) / 5.0)) * 5
+        hi_strike = int(round((latest_spot + range_pts) / 5.0)) * 5
+        strike_levels = np.arange(lo_strike, hi_strike + 5, 5)
 
-        time_labels = [s["time_label"] for s in snapshots]
-        n_times = len(time_labels)
-        n_levels = len(pct_levels)
+        # Build grid: rows=strikes, cols=time
+        n_strikes = len(strike_levels)
+        n_times = len(snapshots)
+        gex_grid = np.zeros((n_strikes, n_times))
 
-        # For each snapshot and each pct level, interpolate GEX+ at that strike
-        gex_grid = np.zeros((n_levels, n_times))
         for t_idx, snap in enumerate(snapshots):
-            snap_spot = snap["spot"]
-            strikes = np.array(snap["strikes"])
-            gex_plus = np.array(snap["gex_plus"])
+            strikes_arr = np.array(snap["strikes"])
+            gex_plus_arr = np.array(snap["gex_plus"])
 
-            for l_idx, pct in enumerate(pct_levels):
-                target_K = snap_spot * (1 + pct / 100)
-                # Linear interp at target strike
-                if len(strikes) >= 2 and strikes.min() <= target_K <= strikes.max():
-                    gex_grid[l_idx, t_idx] = np.interp(target_K, strikes, gex_plus)
-                else:
-                    gex_grid[l_idx, t_idx] = 0
+            for s_idx, K in enumerate(strike_levels):
+                # Find exact or nearest strike match
+                matches = np.where(strikes_arr == K)[0]
+                if len(matches) > 0:
+                    gex_grid[s_idx, t_idx] = gex_plus_arr[matches[0]]
+                elif len(strikes_arr) >= 2 and strikes_arr.min() <= K <= strikes_arr.max():
+                    gex_grid[s_idx, t_idx] = np.interp(K, strikes_arr, gex_plus_arr)
 
-        # Dot-based scatter (SpotGamma style)
-        y_pcts, x_times = np.meshgrid(pct_levels, range(n_times), indexing="ij")
-        flat_y = y_pcts.flatten()
+        # Build scatter dots
+        y_strikes, x_times = np.meshgrid(strike_levels, range(n_times), indexing="ij")
+        flat_y = y_strikes.flatten()
         flat_x = x_times.flatten()
         flat_z = gex_grid.flatten()
 
-        # Dot size: based on magnitude, scaled
         max_abs = max(np.abs(flat_z).max(), 0.001)
         sizes = 5 + 30 * (np.abs(flat_z) / max_abs)
 
-        # Colors: green positive, red negative, gray near zero
         colors = []
         for v in flat_z:
             if v > max_abs * 0.05:
@@ -750,55 +754,51 @@ with tab6:
             else:
                 colors.append("rgba(80,80,80,0.3)")
 
+        time_labels = [s["time_label"] for s in snapshots]
+
         fig_int = go.Figure()
         fig_int.add_trace(go.Scatter(
             x=flat_x, y=flat_y,
             mode="markers",
-            marker=dict(size=sizes, color=colors,
-                        line=dict(width=0)),
-            hovertemplate="Time: %{customdata}<br>%{y:.2f}%<br>GEX+: %{text}<extra></extra>",
+            marker=dict(size=sizes, color=colors, line=dict(width=0)),
+            hovertemplate="Time: %{customdata}<br>Strike: %{y}<br>GEX+: %{text}<extra></extra>",
             text=[f"{v:+.2f}M" for v in flat_z],
             customdata=[time_labels[int(x)] for x in flat_x],
             showlegend=False,
+            name="GEX+",
         ))
 
-        # Spot line: 0% reference
-        fig_int.add_hline(y=0, line_color="white", line_width=1.5,
-                           line_dash="dash")
-
-        # Spot price path overlay (as reference line)
-        spot_pct_path = []
-        first_spot = snapshots[0]["spot"]
-        for snap in snapshots:
-            spot_pct_path.append((snap["spot"] / first_spot - 1) * 100)
+        # Spot price line (actual price from each snapshot)
+        spot_line_y = [s["spot"] for s in snapshots]
+        spot_line_x = list(range(n_times))
 
         fig_int.add_trace(go.Scatter(
-            x=list(range(n_times)),
-            y=spot_pct_path,
-            mode="lines",
+            x=spot_line_x, y=spot_line_y,
+            mode="lines+markers",
             line=dict(color="#3399FF", width=2),
-            name="SPX",
-            hovertemplate="Time: %{text}<br>Spot: %{customdata:.0f}<extra></extra>",
+            marker=dict(size=5, color="#3399FF"),
+            name="SPX (TVC)",
+            hovertemplate="Time: %{text}<br>SPX: %{y:.2f}<extra></extra>",
             text=time_labels,
-            customdata=[s["spot"] for s in snapshots],
         ))
 
-        # X-axis tick labels: use time labels
+        # X-axis tick labels
         tick_vals = list(range(0, n_times, max(1, n_times // 12)))
         tick_text = [time_labels[i] for i in tick_vals]
 
         fig_int.update_layout(
-            template=theme["template"], height=600,
-            xaxis=dict(title="Time", tickmode="array",
+            template=theme["template"], height=650,
+            xaxis=dict(title="Time (ET)", tickmode="array",
                        tickvals=tick_vals, ticktext=tick_text),
-            yaxis=dict(title="% from spot", dtick=pct_step,
-                       range=[-pct_range * 1.05, pct_range * 1.05]),
-            showlegend=False,
+            yaxis=dict(title="Strike", dtick=5,
+                       range=[lo_strike - 2.5, hi_strike + 2.5]),
+            showlegend=True,
+            legend=dict(x=0.01, y=0.99, bgcolor="rgba(0,0,0,0.5)"),
             margin=dict(l=60, r=40, t=30, b=60),
         )
         st.plotly_chart(fig_int, width="stretch")
 
-        # Current spot readout
+        # Summary
         latest = snapshots[-1]
         st.markdown(
             f"**Current:** SPX {latest['spot']:,.2f} · "
@@ -808,6 +808,5 @@ with tab6:
         )
 
 
-# Footer
 st.divider()
 st.caption(f"Data: Barchart · Spot: tvdatafeed TVC:SPX · Last refresh: {ts}")
