@@ -29,7 +29,7 @@ if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
 if not st.session_state.authenticated:
-    st.markdown("<h2 style='text-align:center;'>🔒 SPX Dealer Risk Monitor</h2>",
+    st.markdown("<h2 style='text-align:center;color:#c0d0e8;'>🔒 SPX Dealer Risk Monitor</h2>",
                 unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1, 1, 1])
     with col2:
@@ -48,13 +48,24 @@ if not st.session_state.authenticated:
 if "dark_mode" not in st.session_state:
     st.session_state.dark_mode = True
 
+
+# Navy color palette
+NAVY_BG = "#0a1628"
+NAVY_CARD = "#13213a"
+NAVY_BORDER = "#1e3050"
+NAVY_TEXT = "#c0d0e8"
+NAVY_TEXT_DIM = "#7a93b8"
+NAVY_TEXT_MUTED = "#5a7090"
+
+
 def get_theme():
     if st.session_state.dark_mode:
         return {
             "template": "plotly_dark",
-            "bg": "#0a0a0a", "card_bg": "#141414", "text": "#e0e0e0",
-            "accent": "#00FFAA", "red": "#CC3333", "green": "#33AA33",
-            "blue": "#3366CC", "gold": "#CC8800", "muted": "#666666",
+            "bg": NAVY_BG, "card_bg": NAVY_CARD, "text": NAVY_TEXT,
+            "accent": "#44CCFF", "red": "#FF4466", "green": "#44CC77",
+            "blue": "#4488DD", "gold": "#DDAA44", "muted": NAVY_TEXT_MUTED,
+            "grid": "#1e3050",
         }
     else:
         return {
@@ -62,46 +73,148 @@ def get_theme():
             "bg": "#ffffff", "card_bg": "#f5f5f5", "text": "#1a1a1a",
             "accent": "#008866", "red": "#CC2222", "green": "#228822",
             "blue": "#2255BB", "gold": "#AA7700", "muted": "#999999",
+            "grid": "#dddddd",
         }
 
 theme = get_theme()
 
+
+def apply_plotly_theme(fig):
+    """Apply navy background to any plotly figure in dark mode."""
+    if st.session_state.dark_mode:
+        fig.update_layout(
+            paper_bgcolor=NAVY_BG,
+            plot_bgcolor=NAVY_BG,
+            font=dict(color=NAVY_TEXT),
+        )
+        fig.update_xaxes(gridcolor="#1e3050", zerolinecolor="#2a3f5f")
+        fig.update_yaxes(gridcolor="#1e3050", zerolinecolor="#2a3f5f")
+    return fig
+
+
 # CSS
 if st.session_state.dark_mode:
     st.markdown("""<style>
-        .stApp { background-color: #0a0a0a; }
-        .metric-card { background: #141414; border: 1px solid #222; border-radius: 8px;
-                       padding: 12px 16px; text-align: center; }
-        .metric-label { color: #888; font-size: 11px; text-transform: uppercase; font-family: monospace; }
-        .metric-value { color: #e0e0e0; font-size: 22px; font-weight: bold; font-family: monospace; }
-        .metric-sub { color: #555; font-size: 10px; font-family: monospace; }
-        .regime-badge { padding: 4px 12px; border-radius: 4px; font-weight: bold; font-family: monospace; display: inline-block; }
-        .regime-amp { background: #331111; color: #FF4444; border: 1px solid #FF4444; }
-        .regime-damp { background: #113311; color: #44FF44; border: 1px solid #44FF44; }
-        .crash-card { background: #141414; border: 1px solid #333; border-radius: 8px; padding: 16px; margin: 8px 0; }
-        .crash-elevated { border-left: 4px solid #FF4444; }
-        .crash-neutral { border-left: 4px solid #888; }
-        .crash-contained { border-left: 4px solid #4444FF; }
+        /* Hide Streamlit default chrome */
+        #MainMenu {visibility: hidden;}
+        header {visibility: hidden; height: 0;}
+        footer {visibility: hidden;}
+        .stDeployButton {display: none;}
+        [data-testid="stToolbar"] {visibility: hidden; height: 0; position: fixed;}
+        [data-testid="stDecoration"] {visibility: hidden; height: 0; position: fixed;}
+        [data-testid="stStatusWidget"] {visibility: hidden; height: 0; position: fixed;}
+        [data-testid="stHeader"] {display: none;}
 
+        /* Navy background everywhere */
+        .stApp { background-color: #0a1628 !important; }
+        [data-testid="stAppViewContainer"] { background-color: #0a1628 !important; }
+        [data-testid="stMain"] { background-color: #0a1628 !important; }
+        .main { background-color: #0a1628 !important; }
+        .block-container { padding-top: 1rem !important; background-color: #0a1628 !important; }
+
+        /* Body text */
+        .stMarkdown, .stMarkdown p, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3,
+        .stMarkdown h4, .stMarkdown h5, .stMarkdown li, p, h1, h2, h3, h4, h5 {
+            color: #c0d0e8 !important;
+        }
+
+        /* Metric cards */
+        .metric-card { background: #13213a; border: 1px solid #1e3050; border-radius: 8px;
+                       padding: 12px 16px; text-align: center; }
+        .metric-label { color: #7a93b8; font-size: 11px; text-transform: uppercase; font-family: monospace; }
+        .metric-value { color: #e0e8f5; font-size: 22px; font-weight: bold; font-family: monospace; }
+        .metric-sub { color: #4a5d7e; font-size: 10px; font-family: monospace; }
+
+        /* Regime badges */
+        .regime-badge { padding: 4px 12px; border-radius: 4px; font-weight: bold; font-family: monospace; display: inline-block; }
+        .regime-amp { background: #2a1520; color: #FF6688; border: 1px solid #FF4466; }
+        .regime-damp { background: #152a1f; color: #66FF99; border: 1px solid #44CC77; }
+
+        /* Crash cards */
+        .crash-card { background: #13213a; border: 1px solid #1e3050; border-radius: 8px; padding: 16px; margin: 8px 0; }
+        .crash-elevated { border-left: 4px solid #FF4466; }
+        .crash-neutral { border-left: 4px solid #5a7090; }
+        .crash-contained { border-left: 4px solid #4488DD; }
+
+        /* Buttons */
         .stButton > button {
-            background-color: #1a1a1a !important;
-            color: #e0e0e0 !important;
-            border: 1px solid #333 !important;
+            background-color: #13213a !important;
+            color: #c0d0e8 !important;
+            border: 1px solid #2a3f5f !important;
             font-family: monospace;
         }
         .stButton > button:hover {
-            background-color: #2a2a2a !important;
-            border-color: #555 !important;
+            background-color: #1c2f50 !important;
+            border-color: #4a6090 !important;
             color: #ffffff !important;
         }
+
+        /* Dropdowns */
         div[data-baseweb="select"] > div {
-            background-color: #1a1a1a !important;
-            border-color: #333 !important;
+            background-color: #13213a !important;
+            border-color: #2a3f5f !important;
+            color: #c0d0e8 !important;
         }
+        div[data-baseweb="popover"] {
+            background-color: #13213a !important;
+        }
+        div[data-baseweb="select"] input {
+            color: #c0d0e8 !important;
+        }
+        li[role="option"] {
+            background-color: #13213a !important;
+            color: #c0d0e8 !important;
+        }
+        li[role="option"]:hover {
+            background-color: #1c2f50 !important;
+        }
+
+        /* Text inputs */
+        input[type="text"], input[type="password"] {
+            background-color: #13213a !important;
+            color: #c0d0e8 !important;
+            border-color: #2a3f5f !important;
+        }
+
+        /* Alerts */
         div[data-testid="stAlert"] {
-            background-color: rgba(30,60,30,0.3) !important;
-            border: 1px solid #224422 !important;
-            color: #88CC88 !important;
+            background-color: rgba(30,60,90,0.3) !important;
+            border: 1px solid #2a4060 !important;
+            color: #88BBDD !important;
+        }
+
+        /* Tabs */
+        [data-testid="stTabs"] button {
+            color: #7a93b8 !important;
+        }
+        [data-testid="stTabs"] button[aria-selected="true"] {
+            color: #88BBFF !important;
+        }
+
+        /* Dividers */
+        hr { border-color: #1e3050 !important; }
+
+        /* Dataframe */
+        [data-testid="stDataFrame"] {
+            background-color: #13213a !important;
+        }
+
+        /* Labels above widgets */
+        label, [data-testid="stWidgetLabel"] {
+            color: #c0d0e8 !important;
+        }
+
+        /* Captions */
+        .stCaption, [data-testid="stCaptionContainer"] {
+            color: #7a93b8 !important;
+        }
+
+        /* Plotly chart container background */
+        [data-testid="stPlotlyChart"] {
+            background-color: #0a1628 !important;
+        }
+        .js-plotly-plot {
+            background-color: #0a1628 !important;
         }
     </style>""", unsafe_allow_html=True)
 else:
@@ -157,10 +270,7 @@ def save_snapshot(snapshot):
 
 
 def take_interval_snapshot():
-    """Fetch 0DTE chain + TV spot, compute per-strike GEX, save snapshot."""
     sess, headers = create_session()
-
-    # Use TV spot for snapshot (more accurate for intraday)
     spot_now = fetch_spot_tv()
     if not spot_now:
         spot_now = fetch_spot(sess, headers)
@@ -196,7 +306,7 @@ def take_interval_snapshot():
 
 
 # ═══════════════════════════════════════
-# Main Data Loading (cached)
+# Main Data Loading
 # ═══════════════════════════════════════
 
 @st.cache_data(ttl=300)
@@ -215,7 +325,6 @@ def load_all_data():
     monthlies = future_monthly[:3]
 
     chains = {}
-
     if nearest:
         c, p = fetch_full_chain(sess, headers, nearest, is_dense=False)
         if not c.empty and not p.empty:
@@ -351,8 +460,8 @@ with tab1:
         z=surface, x=x_vals, y=y_vals,
         colorscale=[
             [0, "#8B0000"], [0.20, "#CC2222"], [0.40, "#441111"],
-            [0.48, "#1a0505"], [0.5, "#0a0a0a"], [0.52, "#05051a"],
-            [0.60, "#111144"], [0.80, "#2222CC"], [1, "#0033FF"],
+            [0.48, "#1a0505"], [0.5, "#0a1628"], [0.52, "#0a1020"],
+            [0.60, "#1a2850"], [0.80, "#3366CC"], [1, "#4488FF"],
         ],
         zmid=0, zsmooth="best",
         colorbar=dict(title="GEX+ ($M)"),
@@ -363,20 +472,21 @@ with tab1:
     fig_hm.add_annotation(x=0, y=0, text="◉", showarrow=False,
                            font=dict(color="white", size=18))
     fig_hm.add_annotation(x=-12, y=35, text="DANGER ZONE", showarrow=False,
-                           font=dict(color="#FF5555", size=12), bgcolor="rgba(80,0,0,0.6)")
+                           font=dict(color="#FF6688", size=12), bgcolor="rgba(80,0,0,0.6)")
     fig_hm.add_annotation(x=7, y=-7, text="SAFE ZONE", showarrow=False,
-                           font=dict(color="#5555FF", size=12), bgcolor="rgba(0,0,80,0.6)")
+                           font=dict(color="#66AAFF", size=12), bgcolor="rgba(0,20,60,0.6)")
 
     for pv in [-10, -5, 0, 5, 10]:
         s = spot * (1 + pv / 100)
         fig_hm.add_annotation(x=pv, y=max(y_vals) + 3, text=f"SPX {s:,.0f}",
-            showarrow=False, font=dict(color="rgba(255,255,255,0.5)", size=9))
+            showarrow=False, font=dict(color="rgba(192,208,232,0.6)", size=9))
 
     fig_hm.update_layout(
         template=theme["template"], height=550,
         xaxis_title="Spot Move (%)", yaxis_title="IV Shock (vol pts)",
         xaxis=dict(dtick=5), yaxis=dict(dtick=10),
     )
+    fig_hm = apply_plotly_theme(fig_hm)
     st.plotly_chart(fig_hm, width="stretch")
 
     c0 = surface[np.argmin(np.abs(iv_shocks)), np.argmin(np.abs(spot_pcts))]
@@ -411,6 +521,7 @@ with tab2:
         fig_gex.update_layout(template=theme["template"], height=700, barmode="group")
         fig_gex.update_yaxes(title_text="GEX+ ($M)", row=1, col=1)
         fig_gex.update_yaxes(title_text="$M", row=2, col=1)
+        fig_gex = apply_plotly_theme(fig_gex)
         st.plotly_chart(fig_gex, width="stretch")
 
     st.markdown("#### Charm — Time Decay Hedging Pressure")
@@ -456,9 +567,10 @@ with tab3:
     cur_gp = float(np.interp(0, profile["pct_move"], profile["gex_plus"]))
     fig_prof.add_annotation(x=0, y=cur_gp,
         text=f"SPX {spot:,.0f}<br>GEX+ {cur_gp:.1f}M", showarrow=True, arrowhead=2,
-        font=dict(size=11, color="white"), bgcolor="rgba(0,0,0,0.8)", bordercolor="white")
+        font=dict(size=11, color="white"), bgcolor="rgba(10,22,40,0.9)", bordercolor="white")
     fig_prof.update_layout(template=theme["template"], height=400,
         xaxis_title="Spot Move (%)", yaxis_title="GEX+ ($M)", hovermode="x unified")
+    fig_prof = apply_plotly_theme(fig_prof)
     st.plotly_chart(fig_prof, width="stretch")
 
     st.markdown("#### Crash Risk — GEX+ at Drawdown Levels")
@@ -475,19 +587,19 @@ with tab3:
 
         with crash_cols[i]:
             st.markdown(f"""<div class="crash-card {sev_class}">
-                <div style="font-size:20px;font-weight:bold;font-family:monospace;">{cp}%</div>
-                <div style="font-size:11px;color:{theme['muted']};margin-top:4px;">
+                <div style="font-size:20px;font-weight:bold;font-family:monospace;color:#e0e8f5;">{cp}%</div>
+                <div style="font-size:11px;color:#7a93b8;margin-top:4px;">
                     CRASH SPOT: {cs:,.0f}<br>MARKET IV: ~{20+abs(cp)*0.4:.0f}%
                 </div>
                 <div style="font-size:28px;font-weight:bold;font-family:monospace;margin:8px 0;
-                            color:{'#FF4444' if gp < 0 else '#44FF44'};">
+                            color:{'#FF6688' if gp < 0 else '#66FF99'};">
                     {gp:.0f}M
                 </div>
-                <div style="font-size:10px;color:{theme['muted']};">
+                <div style="font-size:10px;color:#7a93b8;">
                     GEX: {gex:.1f}M · VEX: {vex:.1f}M
                 </div>
                 <div style="font-size:11px;font-weight:bold;margin-top:6px;
-                            color:{'#FF4444' if sev=='ELEVATED' else '#888'};">
+                            color:{'#FF6688' if sev=='ELEVATED' else '#7a93b8'};">
                     {sev}
                 </div>
             </div>""", unsafe_allow_html=True)
@@ -525,7 +637,7 @@ with tab4:
             fig_den = go.Figure()
             fig_den.add_trace(go.Scatter(
                 x=bl["density_strikes"], y=bl["density_vals"],
-                fill="tozeroy", fillcolor="rgba(0,150,200,0.3)",
+                fill="tozeroy", fillcolor="rgba(68,136,221,0.3)",
                 line=dict(color=theme["blue"], width=2), name="RN Density"))
             fig_den.add_vline(x=spot, line_dash="dash", line_color="white",
                 annotation_text=f"SPX {spot:.0f}")
@@ -533,6 +645,7 @@ with tab4:
                 annotation_text=f"BL Mean {bl['mean']:.0f}")
             fig_den.update_layout(template=theme["template"], height=350,
                 xaxis_title="SPX at Expiry", yaxis_title="Probability Density")
+            fig_den = apply_plotly_theme(fig_den)
             st.plotly_chart(fig_den, width="stretch")
     else:
         st.warning("Insufficient OTM option data for Breeden-Litzenberger density extraction.")
@@ -541,7 +654,7 @@ with tab4:
 # ── TAB 5: 0DTE PROFILE ──
 with tab5:
     st.markdown("#### 0DTE Exposure Profile — Current Snapshot")
-    st.caption("Vertical slice of current exposure curve. Blue = positive, Gold = negative.")
+    st.caption("Vertical slice of current exposure curve.")
 
     if nearest_exp and nearest_exp in chains:
         dte_calls = chains[nearest_exp]["calls"]
@@ -566,8 +679,8 @@ with tab5:
                     fig_g.add_trace(go.Scatter(
                         x=np.where(pos_mask, gex_vals, 0),
                         y=strikes, fill="tozerox",
-                        fillcolor="rgba(60,180,60,0.5)",
-                        line=dict(color="#44CC44", width=2),
+                        fillcolor="rgba(68,204,119,0.5)",
+                        line=dict(color="#66DD88", width=2),
                         name="Dampening (+)", mode="lines",
                     ))
                 neg_mask = gex_vals < 0
@@ -575,8 +688,8 @@ with tab5:
                     fig_g.add_trace(go.Scatter(
                         x=np.where(neg_mask, gex_vals, 0),
                         y=strikes, fill="tozerox",
-                        fillcolor="rgba(220,60,60,0.5)",
-                        line=dict(color="#CC4444", width=2),
+                        fillcolor="rgba(255,68,102,0.5)",
+                        line=dict(color="#FF6688", width=2),
                         name="Amplifying (-)", mode="lines",
                     ))
                 fig_g.add_vline(x=0, line_color="gray", line_dash="dash")
@@ -585,6 +698,7 @@ with tab5:
                 fig_g.update_layout(template=theme["template"], height=600,
                     xaxis_title="Net GEX ($B)", yaxis_title="Strike",
                     hovermode="y unified")
+                fig_g = apply_plotly_theme(fig_g)
                 st.plotly_chart(fig_g, width="stretch")
 
             with ccol:
@@ -595,8 +709,8 @@ with tab5:
                     fig_c.add_trace(go.Scatter(
                         x=np.where(pos_mask, charm_vals, 0),
                         y=strikes, fill="tozerox",
-                        fillcolor="rgba(50,140,220,0.5)",
-                        line=dict(color="#1188DD", width=2),
+                        fillcolor="rgba(68,136,221,0.5)",
+                        line=dict(color="#4488DD", width=2),
                         name="Buying support (+)", mode="lines",
                     ))
                 neg_mask = charm_vals < 0
@@ -604,8 +718,8 @@ with tab5:
                     fig_c.add_trace(go.Scatter(
                         x=np.where(neg_mask, charm_vals, 0),
                         y=strikes, fill="tozerox",
-                        fillcolor="rgba(200,140,0,0.5)",
-                        line=dict(color="#CC8800", width=2),
+                        fillcolor="rgba(221,170,68,0.5)",
+                        line=dict(color="#DDAA44", width=2),
                         name="Selling pressure (-)", mode="lines",
                     ))
                 fig_c.add_vline(x=0, line_color="gray", line_dash="dash")
@@ -614,6 +728,7 @@ with tab5:
                 fig_c.update_layout(template=theme["template"], height=600,
                     xaxis_title="Net Charm", yaxis_title="Strike",
                     hovermode="y unified")
+                fig_c = apply_plotly_theme(fig_c)
                 st.plotly_chart(fig_c, width="stretch")
 
             max_gex_idx = np.argmax(np.abs(gex_vals))
@@ -631,9 +746,8 @@ with tab5:
 # ── TAB 6: INTERVAL MAP ──
 with tab6:
     st.markdown("#### Interval Map — 0DTE GEX Over Time")
-    st.caption("Y-axis = actual strikes, ±range from spot. Spot line from TVC:SPX. Auto-refresh during market hours.")
+    st.caption("Y-axis: actual strikes ±range from spot. Blue line: SPX from TVC:SPX.")
 
-    # Controls
     ctrl_cols = st.columns([1.4, 1.2, 0.9, 0.9, 1.0])
 
     with ctrl_cols[0]:
@@ -673,7 +787,6 @@ with tab6:
                 os.remove(path)
                 st.success("Cleared")
 
-    # Auto-refresh
     if auto_refresh:
         et_now = datetime.now(pytz.timezone("US/Eastern"))
         is_weekday = et_now.weekday() < 5
@@ -696,7 +809,6 @@ with tab6:
                 unsafe_allow_html=True,
             )
 
-    # Load snapshots
     snapshots = load_snapshots()
 
     if not snapshots:
@@ -707,15 +819,12 @@ with tab6:
                    f"Latest: {snapshots[-1]['time_label']} · "
                    f"Next auto-fetch in ~{max(0, refresh_sec - int(time.time() - st.session_state.get('last_interval_fetch', 0)))}s")
 
-        # Build strike grid — actual 5-pt strikes around spot
         latest_spot = snapshots[-1]["spot"]
-        range_pts = latest_spot * pct_range / 100  # % range converted to points
-        # Round to nearest 5-pt strikes
+        range_pts = latest_spot * pct_range / 100
         lo_strike = int(round((latest_spot - range_pts) / 5.0)) * 5
         hi_strike = int(round((latest_spot + range_pts) / 5.0)) * 5
         strike_levels = np.arange(lo_strike, hi_strike + 5, 5)
 
-        # Build grid: rows=strikes, cols=time
         n_strikes = len(strike_levels)
         n_times = len(snapshots)
         gex_grid = np.zeros((n_strikes, n_times))
@@ -723,16 +832,13 @@ with tab6:
         for t_idx, snap in enumerate(snapshots):
             strikes_arr = np.array(snap["strikes"])
             gex_plus_arr = np.array(snap["gex_plus"])
-
             for s_idx, K in enumerate(strike_levels):
-                # Find exact or nearest strike match
                 matches = np.where(strikes_arr == K)[0]
                 if len(matches) > 0:
                     gex_grid[s_idx, t_idx] = gex_plus_arr[matches[0]]
                 elif len(strikes_arr) >= 2 and strikes_arr.min() <= K <= strikes_arr.max():
                     gex_grid[s_idx, t_idx] = np.interp(K, strikes_arr, gex_plus_arr)
 
-        # Build scatter dots
         y_strikes, x_times = np.meshgrid(strike_levels, range(n_times), indexing="ij")
         flat_y = y_strikes.flatten()
         flat_x = x_times.flatten()
@@ -750,9 +856,9 @@ with tab6:
             elif v < -max_abs * 0.05:
                 intensity = min(1.0, -v / max_abs)
                 r = int(255 * intensity)
-                colors.append(f"rgb({100+r//2},50,50)")
+                colors.append(f"rgb({100+r//2},50,80)")
             else:
-                colors.append("rgba(80,80,80,0.3)")
+                colors.append("rgba(100,120,150,0.3)")
 
         time_labels = [s["time_label"] for s in snapshots]
 
@@ -768,21 +874,19 @@ with tab6:
             name="GEX+",
         ))
 
-        # Spot price line (actual price from each snapshot)
         spot_line_y = [s["spot"] for s in snapshots]
         spot_line_x = list(range(n_times))
 
         fig_int.add_trace(go.Scatter(
             x=spot_line_x, y=spot_line_y,
             mode="lines+markers",
-            line=dict(color="#3399FF", width=2),
-            marker=dict(size=5, color="#3399FF"),
+            line=dict(color="#44CCFF", width=2),
+            marker=dict(size=5, color="#44CCFF"),
             name="SPX (TVC)",
             hovertemplate="Time: %{text}<br>SPX: %{y:.2f}<extra></extra>",
             text=time_labels,
         ))
 
-        # X-axis tick labels
         tick_vals = list(range(0, n_times, max(1, n_times // 12)))
         tick_text = [time_labels[i] for i in tick_vals]
 
@@ -793,12 +897,12 @@ with tab6:
             yaxis=dict(title="Strike", dtick=5,
                        range=[lo_strike - 2.5, hi_strike + 2.5]),
             showlegend=True,
-            legend=dict(x=0.01, y=0.99, bgcolor="rgba(0,0,0,0.5)"),
+            legend=dict(x=0.01, y=0.99, bgcolor="rgba(10,22,40,0.7)"),
             margin=dict(l=60, r=40, t=30, b=60),
         )
+        fig_int = apply_plotly_theme(fig_int)
         st.plotly_chart(fig_int, width="stretch")
 
-        # Summary
         latest = snapshots[-1]
         st.markdown(
             f"**Current:** SPX {latest['spot']:,.2f} · "
