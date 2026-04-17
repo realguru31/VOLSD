@@ -100,7 +100,7 @@ def compute_gex_plus_at_spot(calls_df, puts_df, hypo_spot, r=0.05):
         iv = row["volatility"]
         if iv <= 0:
             iv = row.get("averageVolatility", 0)
-        if oi <= 0 or iv <= 0 or dte <= 0:
+        if oi <= 0 or iv <= 0 or dte < 0:
             continue
         T = max(dte / 365.0, 1 / (365 * 24))
         total_gex += oi * bsm_gamma(hypo_spot, K, T, r, iv) * 100 * hypo_spot**2 / 1e6
@@ -110,7 +110,7 @@ def compute_gex_plus_at_spot(calls_df, puts_df, hypo_spot, r=0.05):
         iv = row["volatility"]
         if iv <= 0:
             iv = row.get("averageVolatility", 0)
-        if oi <= 0 or iv <= 0 or dte <= 0:
+        if oi <= 0 or iv <= 0 or dte < 0:
             continue
         T = max(dte / 365.0, 1 / (365 * 24))
         total_gex -= oi * bsm_gamma(hypo_spot, K, T, r, iv) * 100 * hypo_spot**2 / 1e6
@@ -152,17 +152,13 @@ def _prep_arrays(df, spot):
         avg_iv = np.full(len(d), 0.20)
     mask = iv <= 0
     iv[mask] = avg_iv[mask]
-    # Still zero? use 0.20 default
     iv[iv <= 0] = 0.20
     return (d["strikePrice"].values, d["openInterest"].values,
             iv, d["daysToExpiration"].values)
 
 
 def build_risk_surface(calls, puts, spot, spot_pcts, iv_shocks, r=0.05):
-    """
-    Vectorized risk surface: rows=IV shocks, cols=spot moves.
-    50-100x faster than row-by-row iterrows.
-    """
+    """Vectorized risk surface: rows=IV shocks, cols=spot moves."""
     c_K, c_OI, c_IV, c_DTE = _prep_arrays(calls, spot)
     p_K, p_OI, p_IV, p_DTE = _prep_arrays(puts, spot)
 
@@ -173,7 +169,6 @@ def build_risk_surface(calls, puts, spot, spot_pcts, iv_shocks, r=0.05):
             S = spot * (1 + sp_pct)
             total = 0.0
 
-            # Calls — vectorized
             if len(c_K) > 0:
                 T = np.maximum(c_DTE / 365.0, 1 / (365 * 24))
                 sig = np.maximum(c_IV + iv_sh, 0.01)
@@ -184,7 +179,6 @@ def build_risk_surface(calls, puts, spot, spot_pcts, iv_shocks, r=0.05):
                 total += np.sum(c_OI * gamma * 100 * S**2 / 1e6)
                 total += np.sum(c_OI * vega * 100 / 1e6)
 
-            # Puts — vectorized
             if len(p_K) > 0:
                 T = np.maximum(p_DTE / 365.0, 1 / (365 * 24))
                 sig = np.maximum(p_IV + iv_sh, 0.01)
@@ -225,10 +219,10 @@ def compute_raw_exposures(calls, puts, spot, r=0.05):
         net_gex = (c_oi * c_g - p_oi * p_g) * 100 * spot**2 / 1e9
 
         c_ch, p_ch = 0.0, 0.0
-        if c_oi > 0 and c_iv > 0 and c_dte > 0:
+        if c_oi > 0 and c_iv > 0 and c_dte >= 0:
             T = max(c_dte / 365.0, 1 / (365 * 24))
             c_ch = c_oi * bsm_charm(spot, K, T, r, c_iv, "call") * 100
-        if p_oi > 0 and p_iv > 0 and p_dte > 0:
+        if p_oi > 0 and p_iv > 0 and p_dte >= 0:
             T = max(p_dte / 365.0, 1 / (365 * 24))
             p_ch = p_oi * bsm_charm(spot, K, T, r, p_iv, "put") * 100
 
@@ -258,7 +252,7 @@ def compute_charm_for_expiry(calls, puts, spot, r=0.05):
         iv, dte = row["volatility"], row["daysToExpiration"]
         if iv <= 0:
             iv = row.get("averageVolatility", 0)
-        if oi > 0 and iv > 0 and dte > 0:
+        if oi > 0 and iv > 0 and dte >= 0:
             T = max(dte / 365.0, 1 / (365 * 24))
             total += oi * bsm_charm(spot, K, T, r, iv, "call") * 100
     for _, row in puts.iterrows():
@@ -266,7 +260,7 @@ def compute_charm_for_expiry(calls, puts, spot, r=0.05):
         iv, dte = row["volatility"], row["daysToExpiration"]
         if iv <= 0:
             iv = row.get("averageVolatility", 0)
-        if oi > 0 and iv > 0 and dte > 0:
+        if oi > 0 and iv > 0 and dte >= 0:
             T = max(dte / 365.0, 1 / (365 * 24))
             total -= oi * bsm_charm(spot, K, T, r, iv, "put") * 100
     return total
@@ -277,17 +271,13 @@ def compute_charm_for_expiry(calls, puts, spot, r=0.05):
 # ═══════════════════════════════════════
 
 def breeden_litzenberger(calls, puts, spot, r=0.05):
-    """
-    Extract risk-neutral density from OTM option prices.
-    Uses mid-price, numerical second derivative of call/put prices w.r.t. strike.
-    """
+    """Extract risk-neutral density from OTM option prices."""
     if calls.empty or puts.empty:
         return None
 
     dte = calls["daysToExpiration"].iloc[0] if not calls.empty else 30
     T = max(dte / 365.0, 1 / (365 * 24))
 
-    # Build OTM price curve
     otm = []
 
     otm_puts = puts[puts["strikePrice"] < spot].copy()
@@ -313,7 +303,6 @@ def breeden_litzenberger(calls, puts, spot, r=0.05):
     strikes = otm_df["strike"].values
     prices = otm_df["price"].values
 
-    # Convert puts to call-equivalent via put-call parity
     call_equiv = np.zeros(len(otm_df))
     for i, row in otm_df.iterrows():
         if row["type"] == "put":
@@ -321,7 +310,6 @@ def breeden_litzenberger(calls, puts, spot, r=0.05):
         else:
             call_equiv[i] = row["price"]
 
-    # Numerical second derivative
     n = len(strikes)
     if n < 5:
         return None
@@ -346,16 +334,13 @@ def breeden_litzenberger(calls, puts, spot, r=0.05):
     density_strikes = np.array(density_strikes)
     density_vals = np.array(density_vals)
 
-    # Normalize density
     total_area = np.trapezoid(density_vals, density_strikes)
     if total_area > 0:
         density_vals = density_vals / total_area
 
-    # CDF
     cdf_vals = np.cumsum(density_vals * np.gradient(density_strikes))
     cdf_vals = np.clip(cdf_vals / max(cdf_vals[-1], 1e-10), 0, 1)
 
-    # Moments
     mean = np.trapezoid(density_strikes * density_vals, density_strikes)
     var = np.trapezoid((density_strikes - mean)**2 * density_vals, density_strikes)
     std = np.sqrt(max(var, 0))
@@ -365,7 +350,6 @@ def breeden_litzenberger(calls, puts, spot, r=0.05):
     else:
         skew, kurt = 0, 3
 
-    # ATM IV
     atm_calls = calls[abs(calls["strikePrice"] - spot) < 20]
     if not atm_calls.empty:
         atm_iv = atm_calls["volatility"].mean()
@@ -380,7 +364,6 @@ def breeden_litzenberger(calls, puts, spot, r=0.05):
     sigma_1w = spot * atm_iv * np.sqrt(5 / 252)
     sigma_exp = spot * atm_iv * np.sqrt(T)
 
-    # Cornish-Fisher percentiles
     def cf_pct(z, s, k):
         return z + (z**2 - 1) * s / 6 + (z**3 - 3*z) * (k - 3) / 24 - (2*z**3 - 5*z) * s**2 / 36
 
@@ -389,23 +372,17 @@ def breeden_litzenberger(calls, puts, spot, r=0.05):
     for pct, z in z_vals.items():
         pctiles_exp[pct] = spot + cf_pct(z, skew, kurt) * sigma_exp
 
-    # Probability table
     prob_table = []
     for K_level in range(int(spot * 0.90), int(spot * 1.10) + 1, 50):
         p_below = float(np.interp(K_level, density_strikes, cdf_vals))
         prob_table.append({
-            "level": K_level,
-            "p_below": p_below * 100,
-            "p_above": (1 - p_below) * 100,
+            "level": K_level, "p_below": p_below * 100, "p_above": (1 - p_below) * 100,
         })
 
     return {
-        "density_strikes": density_strikes,
-        "density_vals": density_vals,
+        "density_strikes": density_strikes, "density_vals": density_vals,
         "mean": mean, "std": std, "skew": skew, "kurt": kurt,
-        "atm_iv": atm_iv,
-        "sigma_exp": sigma_exp,
-        "pctiles_exp": pctiles_exp,
-        "prob_table": prob_table,
+        "atm_iv": atm_iv, "sigma_exp": sigma_exp,
+        "pctiles_exp": pctiles_exp, "prob_table": prob_table,
         "dte": dte, "T": T,
     }
