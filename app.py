@@ -407,8 +407,19 @@ gex_data = {}
 for exp, chain in chains.items():
     gex_data[exp] = compute_gex_vex(chain["calls"], chain["puts"], spot)
 
-front_exp = target_monthlies[0] if target_monthlies else nearest_exp
-if front_exp not in chains:
+front_exp = None
+for m_exp in target_monthlies:
+    if m_exp in chains:
+        c_df = chains[m_exp]["calls"]
+        if not c_df.empty and c_df["daysToExpiration"].iloc[0] > 0:
+            front_exp = m_exp
+            break
+if front_exp is None:
+    for exp, chain in chains.items():
+        if not chain["calls"].empty and chain["calls"]["daysToExpiration"].iloc[0] > 0:
+            front_exp = exp
+            break
+if front_exp is None:
     front_exp = list(chains.keys())[0] if chains else None
 if front_exp is None:
     st.error("No chain data available.")
