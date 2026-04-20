@@ -309,18 +309,24 @@ def build_dot_scatter(flat_x, flat_y, flat_z, name=""):
 
 
 def build_spot_line(tv_bars_df, snap_spots, snap_x_positions):
-    """White spot line. Uses 1-min TV bars if available, snapshot spots as fallback. Rendered LAST."""
+    """White spot line. Uses 1-min TV bars filtered to today RTH only."""
     traces = []
+    today_et = datetime.now(ET).strftime("%Y-%m-%d")
 
     if tv_bars_df is not None and not tv_bars_df.empty:
         spot_x, spot_y = [], []
         for ts_idx, row in tv_bars_df.iterrows():
             bar_time = ts_idx
-            if hasattr(bar_time, 'hour'):
-                mfo = (bar_time.hour - 9) * 60 + bar_time.minute - 30
-                if 0 <= mfo <= RTH_MINUTES:
-                    spot_x.append(mfo)
-                    spot_y.append(row["close"])
+            if not hasattr(bar_time, 'hour'):
+                continue
+            # Filter: today's date only, RTH hours only
+            bar_date = bar_time.strftime("%Y-%m-%d") if hasattr(bar_time, 'strftime') else ""
+            if bar_date != today_et:
+                continue
+            mfo = (bar_time.hour - 9) * 60 + bar_time.minute - 30
+            if 0 <= mfo <= RTH_MINUTES:
+                spot_x.append(mfo)
+                spot_y.append(row["close"])
         if spot_x:
             traces.append(go.Scatter(
                 x=spot_x, y=spot_y, mode="lines",
@@ -329,6 +335,17 @@ def build_spot_line(tv_bars_df, snap_spots, snap_x_positions):
                 hovertemplate="SPX: %{y:.2f}<extra></extra>",
             ))
             return traces
+
+    # Fallback: snapshot spots
+    if snap_spots and snap_x_positions:
+        traces.append(go.Scatter(
+            x=list(snap_x_positions), y=list(snap_spots), mode="lines",
+            line=dict(color="#FFFFFF", width=3),
+            name="SPX",
+            hovertemplate="SPX: %{y:.2f}<extra></extra>",
+        ))
+
+    return traces
 
     # Fallback: snapshot spots
     if snap_spots and snap_x_positions:
