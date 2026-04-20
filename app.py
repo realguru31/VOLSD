@@ -14,7 +14,7 @@ import pickle
 import time
 
 from fetch import (create_session, fetch_spot, fetch_spot_tv, get_expiries,
-                   fetch_full_chain)
+                   fetch_full_chain, pick_nearest_expiry)
 from compute import (compute_gex_vex, find_zero_gamma, build_gex_profile,
                      compute_gex_plus_at_spot, build_risk_surface,
                      compute_raw_exposures, kde_field,
@@ -83,7 +83,6 @@ def apply_plotly_theme(fig):
     return fig
 
 
-# CSS
 if st.session_state.dark_mode:
     st.markdown("""<style>
         #MainMenu {visibility: hidden;}
@@ -201,7 +200,11 @@ def take_interval_snapshot():
     future_weekly = [e for e in weekly if e >= today_str]
     if not future_weekly:
         return False
-    nearest = future_weekly[0]
+
+    # OPEX fix: skip AM monthly if today is monthly expiry
+    nearest = pick_nearest_expiry(future_weekly, monthly)
+    if not nearest:
+        return False
 
     calls, puts = fetch_full_chain(sess, headers, nearest, is_dense=False)
     if calls.empty or puts.empty:
@@ -262,52 +265,43 @@ def fetch_tv_1min_bars():
 # ═══════════════════════════════════════
 # Interval Map Helpers
 # ═══════════════════════════════════════
-
-# RTH constants
-RTH_MINUTES = 390  # 9:30 to 4:00
+RTH_MINUTES = 390
 RTH_TICKS = list(range(0, RTH_MINUTES + 1, 30))
 RTH_LABELS = []
 for _m in RTH_TICKS:
     _h = 9 + (_m + 30) // 60
     _mn = (_m + 30) % 60
     _ap = "AM" if _h < 12 else "PM"
-    if _h > 12:
-        _h -= 12
+    if _h > 12: _h -= 12
     RTH_LABELS.append(f"{_h}:{_mn:02d} {_ap}")
 
-# Dot colors
 DODGER_BLUE = "#1E90FF"
 CRIMSON = "#DC143C"
-DOT_OPACITY_POS = 0.45
-DOT_OPACITY_NEG = 0.45
-DOT_OPACITY_ZERO = 0.10
 
 
 def build_dot_scatter(flat_x, flat_y, flat_z, name=""):
-    """Build sized + colored dot scatter with sqrt scaling, p95 cap, dodger blue / crimson."""
-    flat_z = np.array(flat_z)
+    """Sized + colored dot scatter: sqrt scaling, p95 cap, dodger blue / crimson."""
+    flat_z = np.array(flat_z, dtype=float)
     abs_z = np.abs(flat_z)
-
-    # 95th percentile cap
-    p95 = np.percentile(abs_z[abs_z > 0], 95) if (abs_z > 0).any() else 1
+    nonzero = abs_z[abs_z > 0]
+    p95 = float(np.percentile(nonzero, 95)) if len(nonzero) > 0 else 1.0
     p95 = max(p95, 0.001)
     capped = np.minimum(abs_z / p95, 1.0)
-
-    # Sqrt scaling
     sizes = 4 + 22 * np.sqrt(capped)
 
     colors = []
-    for v, c in zip(flat_z, capped):
-        if v > p95 * 0.02:
-            colors.append(f"rgba(30,144,255,{DOT_OPACITY_POS})")  # dodger blue
-        elif v < -p95 * 0.02:
-            colors.append(f"rgba(220,20,60,{DOT_OPACITY_NEG})")   # crimson
+    threshold = p95 * 0.02
+    for v in flat_z:
+        if v > threshold:
+            colors.append("rgba(30,144,255,0.45)")
+        elif v < -threshold:
+            colors.append("rgba(220,20,60,0.45)")
         else:
-            colors.append(f"rgba(100,120,150,{DOT_OPACITY_ZERO})")
+            colors.append("rgba(100,120,150,0.10)")
 
     return go.Scatter(
-        x=flat_x, y=flat_y, mode="markers",
-        marker=dict(size=sizes, color=colors, line=dict(width=0)),
+        x=list(flat_x), y=list(flat_y), mode="markers",
+        marker=dict(size=sizes.tolist(), color=colors, line=dict(width=0)),
         hovertemplate="Strike: %{y}<br>Value: %{text}<extra></extra>",
         text=[f"{v:+.2f}" for v in flat_z],
         showlegend=False, name=name,
@@ -315,14 +309,10 @@ def build_dot_scatter(flat_x, flat_y, flat_z, name=""):
 
 
 def build_spot_line(tv_bars_df, snap_spots, snap_x_positions):
-    """
-    Build white spot line traces. Uses 1-min TV bars if available,
-    falls back to snapshot spots. Returns list of traces (rendered LAST).
-    """
+    """White spot line. Uses 1-min TV bars if available, snapshot spots as fallback. Rendered LAST."""
     traces = []
 
     if tv_bars_df is not None and not tv_bars_df.empty:
-        # Convert TV bar timestamps to minutes-from-open
         spot_x, spot_y = [], []
         for ts_idx, row in tv_bars_df.iterrows():
             bar_time = ts_idx
@@ -338,15 +328,16 @@ def build_spot_line(tv_bars_df, snap_spots, snap_x_positions):
                 name="SPX",
                 hovertemplate="SPX: %{y:.2f}<extra></extra>",
             ))
-    else:
-        # Fallback: snapshot spots
-        if snap_spots and snap_x_positions:
-            traces.append(go.Scatter(
-                x=snap_x_positions, y=snap_spots, mode="lines",
-                line=dict(color="#FFFFFF", width=3),
-                name="SPX",
-                hovertemplate="SPX: %{y:.2f}<extra></extra>",
-            ))
+            return traces
+
+    # Fallback: snapshot spots
+    if snap_spots and snap_x_positions:
+        traces.append(go.Scatter(
+            x=list(snap_x_positions), y=list(snap_spots), mode="lines",
+            line=dict(color="#FFFFFF", width=3),
+            name="SPX",
+            hovertemplate="SPX: %{y:.2f}<extra></extra>",
+        ))
 
     return traces
 
@@ -367,24 +358,28 @@ def load_all_data():
     future_weekly = [e for e in weekly if e >= today_str]
     future_monthly = [e for e in monthly if e >= today_str]
 
-    nearest = future_weekly[0] if future_weekly else (future_monthly[0] if future_monthly else None)
+    # OPEX fix: pick correct 0DTE expiry
+    nearest = pick_nearest_expiry(future_weekly, monthly)
     monthlies = future_monthly[:3]
 
     chains = {}
     if nearest:
         c, p = fetch_full_chain(sess, headers, nearest, is_dense=False)
         if not c.empty and not p.empty:
-            dte = (datetime.strptime(nearest, "%Y-%m-%d") - datetime.now()).days
-            chains[nearest] = {"calls": c, "puts": p, "label": f"0DTE ({dte}d)"}
+            dte = c["daysToExpiration"].iloc[0] if not c.empty else 0
+            chains[nearest] = {"calls": c, "puts": p, "label": f"0DTE ({dte:.0f}d)"}
 
     for exp in monthlies:
+        if exp == nearest:
+            continue  # don't double-fetch
         c, p = fetch_full_chain(sess, headers, exp, is_dense=True)
         if not c.empty and not p.empty:
-            dte = (datetime.strptime(exp, "%Y-%m-%d") - datetime.now()).days
-            chains[exp] = {"calls": c, "puts": p, "label": f"Monthly ({dte}d)"}
+            dte = c["daysToExpiration"].iloc[0] if not c.empty else 0
+            chains[exp] = {"calls": c, "puts": p, "label": f"Monthly ({dte:.0f}d)"}
 
     return {
         "spot": spot, "nearest": nearest, "monthlies": monthlies,
+        "monthly_list": monthly,
         "chains": chains,
         "timestamp": datetime.now(ET).strftime("%I:%M %p ET"),
     }
@@ -407,8 +402,20 @@ gex_data = {}
 for exp, chain in chains.items():
     gex_data[exp] = compute_gex_vex(chain["calls"], chain["puts"], spot)
 
-front_exp = target_monthlies[0] if target_monthlies else nearest_exp
-if front_exp not in chains:
+# Front monthly for BSM tabs — skip DTE=0 (expired AM monthly)
+front_exp = None
+for m_exp in target_monthlies:
+    if m_exp in chains:
+        c_df = chains[m_exp]["calls"]
+        if not c_df.empty and c_df["daysToExpiration"].iloc[0] > 0:
+            front_exp = m_exp
+            break
+if front_exp is None:
+    for exp, chain in chains.items():
+        if not chain["calls"].empty and chain["calls"]["daysToExpiration"].iloc[0] > 0:
+            front_exp = exp
+            break
+if front_exp is None:
     front_exp = list(chains.keys())[0] if chains else None
 if front_exp is None:
     st.error("No chain data available.")
@@ -448,7 +455,7 @@ if not front_gex.empty:
     total_npd = front_gex["npd_contrib"].sum()
     zg = find_zero_gamma(front_gex, spot)
     combined_gp = sum(gex_data[e]["gex_plus"].sum() for e in target_monthlies if e in gex_data)
-    charm_total = compute_charm_for_expiry(front_calls, front_puts, spot) if front_exp in chains else 0
+    charm_total = compute_charm_for_expiry(front_calls, front_puts, spot)
     regime_amp = combined_gp < 0
 
     cols = st.columns(7)
@@ -485,7 +492,6 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "0DTE PROFILE", "INTERVAL MAP"
 ])
 
-
 # ── TAB 1: HEATMAP ──
 with tab1:
     st.markdown("#### GEX+ Risk Surface — Spot Move × IV Shock")
@@ -521,7 +527,6 @@ with tab1:
                 f"**Worst:** {surface.min():.1f}M (spot {spot_pcts[wi[1]]*100:+.0f}%, IV {iv_shocks[wi[0]]*100:+.0f}pts) · "
                 f"**Best:** {surface.max():.1f}M (spot {spot_pcts[bi[1]]*100:+.0f}%, IV {iv_shocks[bi[0]]*100:+.0f}pts)")
 
-
 # ── TAB 2: RISK ANALYSIS ──
 with tab2:
     st.markdown("#### GEX+ by Strike — Decomposition")
@@ -554,7 +559,6 @@ with tab2:
                            "DTE": f"{dte:.0f}", "Charm (delta/day)": f"{ch:,.0f}"})
     if charm_data:
         st.dataframe(pd.DataFrame(charm_data), width="stretch", hide_index=True)
-
 
 # ── TAB 3: CRASH RISK ──
 with tab3:
@@ -605,7 +609,6 @@ with tab3:
                 <div style="font-size:11px;font-weight:bold;margin-top:6px;color:{'#FF6688' if sev=='ELEVATED' else '#7a93b8'};">{sev}</div>
             </div>""", unsafe_allow_html=True)
 
-
 # ── TAB 4: FORECAST ──
 with tab4:
     st.markdown("#### SPX Probability Forecast")
@@ -641,7 +644,6 @@ with tab4:
             st.plotly_chart(fig_den, width="stretch")
     else:
         st.warning("Insufficient OTM option data for BL density extraction.")
-
 
 # ── TAB 5: 0DTE PROFILE ──
 with tab5:
@@ -694,9 +696,8 @@ with tab5:
     else:
         st.warning("No 0DTE chain available.")
 
-
 # ═══════════════════════════════════════
-# TAB 6: INTERVAL MAP — Fragment (only this refreshes)
+# TAB 6: INTERVAL MAP — Fragment
 # ═══════════════════════════════════════
 with tab6:
 
@@ -734,14 +735,13 @@ with tab6:
 
         st.caption("GEX refresh: fixed 5 min")
 
-        # Auto-fetch at volume rate
+        # Auto-fetch
         if auto_refresh:
             et_now = datetime.now(ET)
             is_weekday = et_now.weekday() < 5
             mo = et_now.replace(hour=9, minute=30, second=0, microsecond=0)
             mc = et_now.replace(hour=16, minute=0, second=0, microsecond=0)
             in_market = is_weekday and mo <= et_now <= mc
-
             if in_market:
                 if "last_interval_fetch" not in st.session_state:
                     st.session_state.last_interval_fetch = 0
@@ -753,44 +753,39 @@ with tab6:
         snapshots = load_snapshots()
 
         if not snapshots:
-            st.info("No snapshots yet. Click 'Fetch' or wait for auto-refresh (9:30-4:00 ET).")
+            st.info("No snapshots yet. Click 'Fetch' or wait for auto-refresh (9:30-4:00 ET weekdays).")
             return
 
         refresh_sec = vol_refresh_min * 60
         remaining = max(0, refresh_sec - int(time.time() - st.session_state.get("last_interval_fetch", 0)))
         st.caption(f"Snapshots: **{len(snapshots)}** · Latest: {snapshots[-1]['time_label']} · Next: ~{remaining}s")
 
-        # ── Strike grid ──
+        # Strike grid
         latest_spot = snapshots[-1]["spot"]
         range_pts = latest_spot * pct_range / 100
         lo_strike = int(round((latest_spot - range_pts) / 5.0)) * 5
         hi_strike = int(round((latest_spot + range_pts) / 5.0)) * 5
         strike_levels = np.arange(lo_strike, hi_strike + 5, 5)
-        n_strikes = len(strike_levels)
 
-        # ── Snap X positions (minutes from 9:30) ──
+        # Snap X positions
         snap_x = [min(s.get("minutes_from_open", 0), RTH_MINUTES) for s in snapshots]
         snap_spots = [s["spot"] for s in snapshots]
 
-        # ── Fetch 1-min TV bars for spot line ──
+        # TV 1-min bars for spot line
         tv_bars = fetch_tv_1min_bars()
 
-        # ── Filter snapshots to 5-min intervals for GEX chart ──
-        gex_snaps = []
-        gex_snap_x = []
-        last_gex_bucket = -999
+        # Filter to 5-min for GEX chart
+        gex_snaps, gex_snap_x = [], []
+        last_bucket = -999
         for idx, snap in enumerate(snapshots):
             mfo = snap.get("minutes_from_open", 0)
             bucket = int(mfo // 5) * 5
-            if bucket > last_gex_bucket:
+            if bucket > last_bucket:
                 gex_snaps.append(snap)
                 gex_snap_x.append(snap_x[idx])
-                last_gex_bucket = bucket
+                last_bucket = bucket
 
-        # ════════════════════════════
-        # CHART 1: GEX Landscape (5-min)
-        # ════════════════════════════
-        n_gex = len(gex_snaps)
+        # ── CHART 1: GEX Landscape ──
         flat_x_g, flat_y_g, flat_z_g = [], [], []
         for t_idx, snap in enumerate(gex_snaps):
             strikes_arr = np.array(snap["strikes"])
@@ -809,11 +804,8 @@ with tab6:
 
         fig_gex_map = go.Figure()
         fig_gex_map.add_trace(build_dot_scatter(flat_x_g, flat_y_g, flat_z_g, "GEX+"))
-
-        # Spot line LAST (white, on top)
         for tr in build_spot_line(tv_bars, snap_spots, snap_x):
             fig_gex_map.add_trace(tr)
-
         fig_gex_map.update_layout(
             template=theme["template"], height=380,
             title_text="GEX Landscape — 5 min intervals",
@@ -825,37 +817,28 @@ with tab6:
         fig_gex_map = apply_plotly_theme(fig_gex_map)
         st.plotly_chart(fig_gex_map, width="stretch")
 
-        # ════════════════════════════
-        # CHART 2: Volume Incremental (delta from previous)
-        # ════════════════════════════
+        # ── CHART 2: Volume Incremental ──
         if len(snapshots) >= 2:
             flat_x_vi, flat_y_vi, flat_z_vi = [], [], []
             for t_idx in range(1, len(snapshots)):
                 prev = snapshots[t_idx - 1]
                 curr = snapshots[t_idx]
-                pcv = prev.get("call_volumes", {})
-                ppv = prev.get("put_volumes", {})
-                ccv = curr.get("call_volumes", {})
-                cpv = curr.get("put_volumes", {})
-
+                pcv, ppv = prev.get("call_volumes", {}), prev.get("put_volumes", {})
+                ccv, cpv = curr.get("call_volumes", {}), curr.get("put_volumes", {})
                 for K in strike_levels:
                     Kf = float(K)
-                    d_call = ccv.get(Kf, 0) - pcv.get(Kf, 0)
-                    d_put = cpv.get(Kf, 0) - ppv.get(Kf, 0)
-                    net = d_call - d_put
+                    net = (ccv.get(Kf, 0) - pcv.get(Kf, 0)) - (cpv.get(Kf, 0) - ppv.get(Kf, 0))
                     flat_x_vi.append(snap_x[t_idx])
                     flat_y_vi.append(K)
                     flat_z_vi.append(net)
 
             fig_vol_inc = go.Figure()
             fig_vol_inc.add_trace(build_dot_scatter(flat_x_vi, flat_y_vi, flat_z_vi, "Incremental"))
-
             for tr in build_spot_line(tv_bars, snap_spots, snap_x):
                 fig_vol_inc.add_trace(tr)
-
             fig_vol_inc.update_layout(
                 template=theme["template"], height=380,
-                title_text="Volume Flow — Incremental (delta from previous snapshot)",
+                title_text="Volume Flow — Incremental (delta from previous)",
                 xaxis=dict(range=[0, RTH_MINUTES], tickmode="array",
                            tickvals=RTH_TICKS, ticktext=RTH_LABELS, tickangle=-45),
                 yaxis=dict(title="Strike", dtick=5, range=[lo_strike-2.5, hi_strike+2.5]),
@@ -866,35 +849,25 @@ with tab6:
         else:
             st.caption("Volume Incremental — needs 2+ snapshots.")
 
-        # ════════════════════════════
-        # CHART 3: Volume Cumulative (delta from first snapshot)
-        # ════════════════════════════
+        # ── CHART 3: Volume Cumulative ──
         if len(snapshots) >= 2:
             first = snapshots[0]
-            first_cv = first.get("call_volumes", {})
-            first_pv = first.get("put_volumes", {})
-
+            first_cv, first_pv = first.get("call_volumes", {}), first.get("put_volumes", {})
             flat_x_vc, flat_y_vc, flat_z_vc = [], [], []
             for t_idx in range(1, len(snapshots)):
                 curr = snapshots[t_idx]
-                ccv = curr.get("call_volumes", {})
-                cpv = curr.get("put_volumes", {})
-
+                ccv, cpv = curr.get("call_volumes", {}), curr.get("put_volumes", {})
                 for K in strike_levels:
                     Kf = float(K)
-                    d_call = ccv.get(Kf, 0) - first_cv.get(Kf, 0)
-                    d_put = cpv.get(Kf, 0) - first_pv.get(Kf, 0)
-                    net = d_call - d_put
+                    net = (ccv.get(Kf, 0) - first_cv.get(Kf, 0)) - (cpv.get(Kf, 0) - first_pv.get(Kf, 0))
                     flat_x_vc.append(snap_x[t_idx])
                     flat_y_vc.append(K)
                     flat_z_vc.append(net)
 
             fig_vol_cum = go.Figure()
             fig_vol_cum.add_trace(build_dot_scatter(flat_x_vc, flat_y_vc, flat_z_vc, "Cumulative"))
-
             for tr in build_spot_line(tv_bars, snap_spots, snap_x):
                 fig_vol_cum.add_trace(tr)
-
             fig_vol_cum.update_layout(
                 template=theme["template"], height=380,
                 title_text="Volume Flow — Cumulative (delta from first snapshot)",
@@ -908,14 +881,12 @@ with tab6:
         else:
             st.caption("Volume Cumulative — needs 2+ snapshots.")
 
-        # Summary
         latest = snapshots[-1]
         st.markdown(f"**Current:** SPX {latest['spot']:,.2f} · Expiry: {latest['expiry']} · "
                     f"Day range: {min(s['spot'] for s in snapshots):,.2f} - "
                     f"{max(s['spot'] for s in snapshots):,.2f}")
 
     interval_map_fragment()
-
 
 st.divider()
 st.caption(f"Data: Barchart · Spot: tvdatafeed TVC:SPX · Last refresh: {ts}")
