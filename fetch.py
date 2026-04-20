@@ -202,3 +202,17 @@ def fetch_full_chain(sess, headers, expiry, is_dense=False):
     else:
         all_calls, all_puts = fetch_chain_grouped(sess, headers, expiry, "asc")
     return all_calls, all_puts
+
+
+def pick_nearest_expiry(future_weekly, monthly_list):
+    """
+    Pick the right 0DTE expiry. On monthly OPEX day, today's chain is the
+    expired AM monthly (wide strikes, no ATM) — skip it and use next weekly.
+    """
+    if not future_weekly:
+        return None
+    candidate = future_weekly[0]
+    # If today is monthly OPEX, the AM chain is dead — use next weekly
+    if candidate in monthly_list and len(future_weekly) > 1:
+        return future_weekly[1]
+    return candidate
